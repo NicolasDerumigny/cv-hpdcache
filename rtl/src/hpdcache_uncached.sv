@@ -263,21 +263,22 @@ import hpdcache_pkg::*;
 
 //  LR/SC reservation buffer logic
 //  {{{
-    logic               lrsc_rsrv_valid_q;
-    hpdcache_req_addr_t lrsc_rsrv_addr_q, lrsc_rsrv_addr_d;
-    hpdcache_nline_t    lrsc_rsrv_nline;
-    hpdcache_offset_t   lrsc_rsrv_word;
+    logic                                 lrsc_rsrv_valid_q;
+    logic [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_req_id_q, lrsc_rsrv_req_id_d;
+    hpdcache_req_addr_t                   lrsc_rsrv_addr_q, lrsc_rsrv_addr_d;
+    hpdcache_nline_t                      lrsc_rsrv_nline;
+    hpdcache_offset_t                     lrsc_rsrv_word;
 
-    hpdcache_offset_t   lrsc_snoop_words;
-    hpdcache_nline_t    lrsc_snoop_nline;
-    hpdcache_offset_t   lrsc_snoop_base, lrsc_snoop_end;
-    logic               lrsc_snoop_hit;
-    logic               lrsc_snoop_reset;
+    hpdcache_offset_t                     lrsc_snoop_words;
+    hpdcache_nline_t                      lrsc_snoop_nline;
+    hpdcache_offset_t                     lrsc_snoop_base, lrsc_snoop_end;
+    logic                                 lrsc_snoop_hit;
+    logic                                 lrsc_snoop_reset;
 
-    hpdcache_nline_t    lrsc_uc_nline;
-    hpdcache_offset_t   lrsc_uc_word;
-    logic               lrsc_uc_hit;
-    logic               lrsc_uc_set, lrsc_uc_reset;
+    hpdcache_nline_t                      lrsc_uc_nline;
+    hpdcache_offset_t                     lrsc_uc_word;
+    logic                                 lrsc_uc_hit;
+    logic                                 lrsc_uc_set, lrsc_uc_reset;
 
     //  NOTE: Reservation set for LR instruction is always 8-bytes in this
     //  implementation.
@@ -322,6 +323,7 @@ import hpdcache_pkg::*;
         rsp_error_set          = 1'b0;
         rsp_error_rst          = 1'b0;
         lrsc_rsrv_addr_d       = lrsc_rsrv_addr_q;
+        lrsc_rsrv_req_id_d     = lrsc_rsrv_req_id_q;
         uc_sc_retcode_d        = uc_sc_retcode_q;
         wbuf_flush_all_o       = 1'b0;
         lrsc_uc_set            = 1'b0;
@@ -377,11 +379,13 @@ import hpdcache_pkg::*;
                                 rsp_error_set = 1'b1;
                                 uc_fsm_d = UC_CORE_RSP;
                             end else begin
-                                //  Reset previous reservation (if any)
-                                lrsc_uc_reset = 1'b1;
+                                //  Reset previous reservation from the same requester (if any)
+                                if (lrsc_rsrv_req_id_q[req_sid_i]) begin
+                                    lrsc_uc_reset = 1'b1;
+                                end
 
                                 //  SC with valid reservation
-                                if (lrsc_uc_hit) begin
+                                if (lrsc_uc_hit & (lrsc_rsrv_req_id_q[req_sid_i])) begin
                                     if (no_pend_trans) begin
                                         uc_fsm_d = UC_MEM_REQ;
                                     end else begin
@@ -525,12 +529,16 @@ import hpdcache_pkg::*;
                             //  set a new reservation
                             if (!rd_error)
                             begin
-                                lrsc_uc_set      = 1'b1;
-                                lrsc_rsrv_addr_d = req_addr_q;
+                                if ((!lrsc_rsrv_valid_q) || req_addr_q == lrsc_rsrv_addr_q) begin
+                                    lrsc_uc_set                   = 1'b1;
+                                    lrsc_rsrv_addr_d              = req_addr_q;
+                                    lrsc_rsrv_req_id_d[req_sid_q] = 1;
+                                end
                             end
                             //  in case of a memory error, do not make the reservation and
-                            //  invalidate an existing one (if valid)
-                            else begin
+                            //  invalidate an existing one (if valid and coming from the same
+                            //  requester)
+                            else if (lrsc_rsrv_req_id_q[req_sid_q]) begin
                                 lrsc_uc_reset = 1'b1;
                             end
 
@@ -697,8 +705,10 @@ import hpdcache_pkg::*;
                 mem_req_read_valid_o           = (uc_fsm_q == UC_MEM_REQ);
             end
             req_op_q.is_amo_lr: begin
-                mem_req_read_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
-                mem_req_read_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_LDEX;
+                if ((!lrsc_rsrv_valid_q) || lrsc_rsrv_req_id_q[req_sid_q]) begin
+                    mem_req_read_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
+                    mem_req_read_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_LDEX;
+                end
                 mem_req_read_valid_o           = (uc_fsm_q == UC_MEM_REQ);
             end
             default: begin
@@ -906,19 +916,21 @@ import hpdcache_pkg::*;
     always_ff @(posedge clk_i or negedge rst_ni)
     begin : uc_fsm_ff
         if (!rst_ni) begin
-            uc_fsm_q          <= UC_IDLE;
-            lrsc_rsrv_valid_q <= 1'b0;
+            uc_fsm_q           <= UC_IDLE;
+            lrsc_rsrv_valid_q  <= 1'b0;
+            lrsc_rsrv_req_id_q <= 'b0;
         end else begin
-            uc_fsm_q          <= uc_fsm_d;
-            lrsc_rsrv_valid_q <= (~lrsc_rsrv_valid_q &  lrsc_rsrv_valid_set  ) |
-                                 ( lrsc_rsrv_valid_q & ~lrsc_rsrv_valid_reset);
+            uc_fsm_q           <= uc_fsm_d;
+            lrsc_rsrv_valid_q  <= (~lrsc_rsrv_valid_q &  lrsc_rsrv_valid_set  ) |
+                                  ( lrsc_rsrv_valid_q & ~lrsc_rsrv_valid_reset);
+            lrsc_rsrv_req_id_q <= lrsc_rsrv_valid_reset ? 'b0 : lrsc_rsrv_req_id_d;
         end
     end
 
     always_ff @(posedge clk_i)
     begin : uc_amo_ff
-        lrsc_rsrv_addr_q <= lrsc_rsrv_addr_d;
-        uc_sc_retcode_q  <= uc_sc_retcode_d;
+        lrsc_rsrv_addr_q   <= lrsc_rsrv_addr_d;
+        uc_sc_retcode_q    <= uc_sc_retcode_d;
     end
 //  }}}
 
