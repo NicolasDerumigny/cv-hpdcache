@@ -263,49 +263,51 @@ import hpdcache_pkg::*;
 
 //  LR/SC reservation buffer logic
 //  {{{
-    logic                                 lrsc_rsrv_valid_q;
-    logic [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_req_id_q, lrsc_rsrv_req_id_d;
-    hpdcache_req_addr_t                   lrsc_rsrv_addr_q, lrsc_rsrv_addr_d;
-    hpdcache_nline_t                      lrsc_rsrv_nline;
-    hpdcache_offset_t                     lrsc_rsrv_word;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_valid_q;
+    hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_addr_q, lrsc_rsrv_addr_d;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] lrsc_uc_set, lrsc_uc_reset;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] lrsc_snoop_reset;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] lrsc_uc_hit;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] lrsc_snoop_hit;
 
-    hpdcache_offset_t                     lrsc_snoop_words;
-    hpdcache_nline_t                      lrsc_snoop_nline;
-    hpdcache_offset_t                     lrsc_snoop_base, lrsc_snoop_end;
-    logic                                 lrsc_snoop_hit;
-    logic                                 lrsc_snoop_reset;
+    hpdcache_offset_t   [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_word;
+    hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_nline;
 
-    hpdcache_nline_t                      lrsc_uc_nline;
-    hpdcache_offset_t                     lrsc_uc_word;
-    logic                                 lrsc_uc_hit;
-    logic                                 lrsc_uc_set, lrsc_uc_reset;
+    hpdcache_offset_t                                   lrsc_snoop_words;
+    hpdcache_nline_t                                    lrsc_snoop_nline;
+    hpdcache_offset_t                                   lrsc_snoop_base, lrsc_snoop_end;
+
+    hpdcache_nline_t                                    lrsc_uc_nline;
+    hpdcache_offset_t                                   lrsc_uc_word;
 
     //  NOTE: Reservation set for LR instruction is always 8-bytes in this
     //  implementation.
-    assign lrsc_rsrv_nline  = lrsc_rsrv_addr_q[HPDcacheCfg.clOffsetWidth +:
-                                               HPDcacheCfg.nlineWidth];
-    assign lrsc_rsrv_word   = lrsc_rsrv_addr_q[0 +: HPDcacheCfg.clOffsetWidth] >> 3;
-
-    //  Check hit on LR/SC reservation for snoop port (normal write accesses)
     assign lrsc_snoop_words = (lrsc_snoop_size_i < 3) ?
             1 : hpdcache_offset_t'((8'h1 << lrsc_snoop_size_i) >> 3);
-    assign lrsc_snoop_nline = lrsc_snoop_addr_i[HPDcacheCfg.clOffsetWidth +:
-                                                HPDcacheCfg.nlineWidth];
+    assign lrsc_snoop_nline = lrsc_snoop_addr_i[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
+
+    //  Check hit on LR/SC reservation for snoop port (normal write accesses)
     assign lrsc_snoop_base  = lrsc_snoop_addr_i[0 +: HPDcacheCfg.clOffsetWidth] >> 3;
     assign lrsc_snoop_end   = lrsc_snoop_base + lrsc_snoop_words;
-
-    assign lrsc_snoop_hit   = lrsc_rsrv_valid_q & (lrsc_rsrv_nline == lrsc_snoop_nline) &
-                                                  (lrsc_rsrv_word  >= lrsc_snoop_base) &
-                                                  (lrsc_rsrv_word  <  lrsc_snoop_end );
-
-    assign lrsc_snoop_reset = lrsc_snoop_i & lrsc_snoop_hit;
 
     //  Check hit on LR/SC reservation for AMOs and SC
     assign lrsc_uc_nline    = req_addr_i[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
     assign lrsc_uc_word     = req_addr_i[0 +: HPDcacheCfg.clOffsetWidth] >> 3;
 
-    assign lrsc_uc_hit      = lrsc_rsrv_valid_q & (lrsc_rsrv_nline == lrsc_uc_nline) &
-                                                  (lrsc_rsrv_word  == lrsc_uc_word);
+    genvar gen_req_id;
+    generate
+      for (gen_req_id = 0; gen_req_id < HPDcacheCfg.u.nRequesters; gen_req_id++) begin : gen_lrsc_rsrv_hits
+          assign lrsc_rsrv_nline  [gen_req_id] = lrsc_rsrv_addr_q[gen_req_id][HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
+          assign lrsc_rsrv_word   [gen_req_id] = lrsc_rsrv_addr_q[gen_req_id][0 +: HPDcacheCfg.clOffsetWidth] >> 3;
+          assign lrsc_snoop_hit   [gen_req_id] = lrsc_rsrv_valid_q[gen_req_id] & (lrsc_rsrv_nline[gen_req_id] == lrsc_snoop_nline) &
+                                                         (lrsc_rsrv_word[gen_req_id]  >= lrsc_snoop_base) &
+                                                         (lrsc_rsrv_word[gen_req_id]  <  lrsc_snoop_end );
+          assign lrsc_snoop_reset [gen_req_id] = lrsc_snoop_i & lrsc_snoop_hit[gen_req_id];
+          assign lrsc_uc_hit      [gen_req_id] = lrsc_rsrv_valid_q[gen_req_id] &
+                                                (lrsc_rsrv_nline[gen_req_id] == lrsc_uc_nline) &
+                                                (lrsc_rsrv_word [gen_req_id] == lrsc_uc_word);
+      end
+    endgenerate
 //  }}}
 
     assign no_pend_trans = wbuf_empty_i &&
@@ -322,12 +324,11 @@ import hpdcache_pkg::*;
         mem_resp_read_valid_d  = mem_resp_read_valid_q;
         rsp_error_set          = 1'b0;
         rsp_error_rst          = 1'b0;
-        lrsc_rsrv_addr_d       = lrsc_rsrv_addr_q;
-        lrsc_rsrv_req_id_d     = lrsc_rsrv_req_id_q;
         uc_sc_retcode_d        = uc_sc_retcode_q;
         wbuf_flush_all_o       = 1'b0;
-        lrsc_uc_set            = 1'b0;
-        lrsc_uc_reset          = 1'b0;
+        lrsc_rsrv_addr_d       = lrsc_rsrv_addr_q;
+        lrsc_uc_set            = 'b0;
+        lrsc_uc_reset          = 'b0;
 
         uc_fsm_d               = uc_fsm_q;
 
@@ -360,7 +361,11 @@ import hpdcache_pkg::*;
                         req_op_i.is_amo_minu,
                         req_op_i.is_amo_lr: begin
                             //  Reset LR/SC reservation if AMO matches its address
-                            lrsc_uc_reset = ~req_op_i.is_amo_lr & lrsc_uc_hit;
+                            if (!req_op_i.is_amo_lr) begin
+                                for (int gen_req_id = '0; gen_req_id < HPDcacheCfg.u.nRequesters; gen_req_id++) begin
+                                    lrsc_uc_reset[gen_req_id] = lrsc_uc_hit[gen_req_id];
+                                end
+                            end
 
                             if (!req_uc_i && cfg_error_on_cacheable_amo_i) begin
                                 rsp_error_set = 1'b1;
@@ -379,13 +384,11 @@ import hpdcache_pkg::*;
                                 rsp_error_set = 1'b1;
                                 uc_fsm_d = UC_CORE_RSP;
                             end else begin
-                                //  Reset previous reservation from the same requester (if any)
-                                if (lrsc_rsrv_req_id_q[req_sid_i]) begin
-                                    lrsc_uc_reset = 1'b1;
-                                end
+                                //  Reset all matching reservations
+                                lrsc_uc_reset |= lrsc_uc_hit;
 
                                 //  SC with valid reservation
-                                if (lrsc_uc_hit & (lrsc_rsrv_req_id_q[req_sid_i])) begin
+                                if (lrsc_uc_hit[req_sid_i]) begin
                                     if (no_pend_trans) begin
                                         uc_fsm_d = UC_MEM_REQ;
                                     end else begin
@@ -529,17 +532,12 @@ import hpdcache_pkg::*;
                             //  set a new reservation
                             if (!rd_error)
                             begin
-                                if ((!lrsc_rsrv_valid_q) || req_addr_q == lrsc_rsrv_addr_q) begin
-                                    lrsc_uc_set                   = 1'b1;
-                                    lrsc_rsrv_addr_d              = req_addr_q;
-                                    lrsc_rsrv_req_id_d[req_sid_q] = 1;
-                                end
-                            end
-                            //  in case of a memory error, do not make the reservation and
-                            //  invalidate an existing one (if valid and coming from the same
-                            //  requester)
-                            else if (lrsc_rsrv_req_id_q[req_sid_q]) begin
-                                lrsc_uc_reset = 1'b1;
+                                lrsc_uc_set[req_sid_q]        = 1'b1;
+                                lrsc_rsrv_addr_d[req_sid_q]   = req_addr_q;
+                            end else begin
+                                //  in case of a memory error, do not make the reservation and
+                                //  invalidate an existing one
+                                lrsc_uc_reset[req_sid_q] = 1'b1;
                             end
 
                             if (req_uc_q || rd_error) begin
@@ -553,7 +551,10 @@ import hpdcache_pkg::*;
                         if (mem_resp_write_valid_i) begin
                             automatic bit is_atomic;
 
-                            is_atomic = mem_resp_write_i.mem_resp_w_is_atomic && !wr_error;
+                            //is_atomic = mem_resp_write_i.mem_resp_w_is_atomic && !wr_error;
+                            // Ignore `mem_resp_write_i.mem_resp_w_is_atomic` as we are the PoS for
+                            // LR/SC
+                            is_atomic = !wr_error;
                             uc_sc_retcode_d = is_atomic ? AMO_SC_SUCCESS : AMO_SC_FAILURE;
 
                             if (req_uc_q || !is_atomic) begin
@@ -701,16 +702,15 @@ import hpdcache_pkg::*;
         mem_req_read_o.mem_req_atomic    = HPDCACHE_MEM_ATOMIC_ADD;
 
         unique case (1'b1)
+            req_op_q.is_amo_lr,
             req_op_q.is_ld: begin
                 mem_req_read_valid_o           = (uc_fsm_q == UC_MEM_REQ);
             end
-            req_op_q.is_amo_lr: begin
-                if ((!lrsc_rsrv_valid_q) || lrsc_rsrv_req_id_q[req_sid_q]) begin
-                    mem_req_read_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
-                    mem_req_read_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_LDEX;
-                end
-                mem_req_read_valid_o           = (uc_fsm_q == UC_MEM_REQ);
-            end
+           //req_op_q.is_amo_lr: begin
+           //    mem_req_read_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
+           //    mem_req_read_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_LDEX;
+           //    mem_req_read_valid_o           = (uc_fsm_q == UC_MEM_REQ);
+           //end
             default: begin
                 mem_req_read_valid_o           = 1'b0;
             end
@@ -729,10 +729,10 @@ import hpdcache_pkg::*;
         mem_req_write_o.mem_req_id        = mem_write_id_i;
         mem_req_write_o.mem_req_cacheable = 1'b0;
         unique case (1'b1)
-            req_op_q.is_amo_sc: begin
-                mem_req_write_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
-                mem_req_write_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_STEX;
-            end
+            //req_op_q.is_amo_sc: begin
+            //    mem_req_write_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
+            //    mem_req_write_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_STEX;
+            //end
             req_op_q.is_amo_swap: begin
                 mem_req_write_o.mem_req_command = HPDCACHE_MEM_ATOMIC;
                 mem_req_write_o.mem_req_atomic  = HPDCACHE_MEM_ATOMIC_SWAP;
@@ -908,7 +908,7 @@ import hpdcache_pkg::*;
 
 //  Uncacheable request FSM set state
 //  {{{
-    logic lrsc_rsrv_valid_set, lrsc_rsrv_valid_reset;
+    logic [HPDcacheCfg.u.nRequesters-1:0] lrsc_rsrv_valid_set, lrsc_rsrv_valid_reset;
 
     assign lrsc_rsrv_valid_set   = lrsc_uc_set,
            lrsc_rsrv_valid_reset = lrsc_uc_reset | lrsc_snoop_reset;
@@ -918,12 +918,10 @@ import hpdcache_pkg::*;
         if (!rst_ni) begin
             uc_fsm_q           <= UC_IDLE;
             lrsc_rsrv_valid_q  <= 1'b0;
-            lrsc_rsrv_req_id_q <= 'b0;
         end else begin
             uc_fsm_q           <= uc_fsm_d;
             lrsc_rsrv_valid_q  <= (~lrsc_rsrv_valid_q &  lrsc_rsrv_valid_set  ) |
                                   ( lrsc_rsrv_valid_q & ~lrsc_rsrv_valid_reset);
-            lrsc_rsrv_req_id_q <= lrsc_rsrv_valid_reset ? 'b0 : lrsc_rsrv_req_id_d;
         end
     end
 
