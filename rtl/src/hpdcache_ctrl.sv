@@ -46,7 +46,9 @@ import hpdcache_pkg::*;
     parameter type hpdcache_req_be_t = logic,
 
     parameter type hpdcache_req_t = logic,
-    parameter type hpdcache_rsp_t = logic
+    parameter type hpdcache_rsp_t = logic,
+
+    parameter unsigned CFIG_BASE  = '0
 )
     // }}}
 
@@ -231,6 +233,19 @@ import hpdcache_pkg::*;
     input  logic                  mshr_empty_i,
     input  logic                  flush_empty_i,
 
+    //  CSR Interface
+    input  logic                  csr_busy_i,
+    output  logic                 csr_req_valid_o,
+    output  logic                 csr_req_is_load_o,
+    output  logic                 csr_req_is_store_o,
+    output  hpdcache_req_addr_t   csr_req_addr_o,
+    output  hpdcache_req_data_t   csr_req_wdata_o,
+    output  hpdcache_req_sid_t    csr_req_sid_o,
+    output  hpdcache_req_tid_t    csr_req_tid_o,
+    output  logic                 csr_core_rsp_ready_o,
+    input   logic                 csr_core_rsp_valid_i,
+    input   hpdcache_rsp_t        csr_core_rsp_i,
+
     output logic                  rtab_empty_o,
     output logic                  ctrl_empty_o,
 
@@ -352,6 +367,7 @@ import hpdcache_pkg::*;
     logic                    st0_req_is_cmo_inval;
     logic                    st0_req_is_cmo_prefetch;
     logic                    st0_req_is_partial;
+    logic                    st0_req_is_csr;
     logic                    st0_req_cachedir_read;
     hpdcache_set_t           st0_req_set;
     hpdcache_word_t          st0_req_word;
@@ -380,6 +396,7 @@ import hpdcache_pkg::*;
     logic                    st1_req_is_uncacheable;
     logic                    st1_req_is_load;
     logic                    st1_req_is_store;
+    logic                    st1_req_is_csr;
     logic                    st1_req_is_amo;
     logic                    st1_req_is_amo_lr;
     logic                    st1_req_is_amo_sc;
@@ -519,6 +536,8 @@ import hpdcache_pkg::*;
     assign st0_req_is_cmo_prefetch = is_cmo_prefetch(st0_req.req.op);
 
     assign st0_req_is_partial = (hpdcache_uint'(st0_req.req.size) < HPDcacheCfg.wordByteIdxWidth);
+    assign st0_req_addr       = {st0_req.req.addr_tag, st0_req.req.addr_offset};
+    assign st0_req_is_csr     = (st0_req_addr >> 12) == CFIG_BASE;
     //  }}}
 
     //  Decode operation in stage 1
@@ -609,6 +628,7 @@ import hpdcache_pkg::*;
         .st0_req_is_load_i                  (st0_req_is_load),
         .st0_req_is_scrub_i                 (st0_req_is_scrub),
         .st0_req_is_store_i                 (st0_req_is_store),
+        .st0_req_is_csr_i                   (st0_req_is_csr),
         .st0_req_is_amo_i                   (st0_req_is_amo),
         .st0_req_is_cmo_fence_i             (st0_req_is_cmo_fence),
         .st0_req_is_cmo_inval_i             (st0_req_is_cmo_inval),
@@ -625,6 +645,7 @@ import hpdcache_pkg::*;
         .st1_req_need_rsp_i                 (st1_req.req.need_rsp),
         .st1_req_is_load_i                  (st1_req_is_load),
         .st1_req_is_store_i                 (st1_req_is_store),
+        .st1_req_is_csr_i                   (st1_req_is_csr),
         .st1_req_is_amo_i                   (st1_req_is_amo),
         .st1_req_is_cmo_inval_i             (st1_req_is_cmo_inval),
         .st1_req_is_cmo_flush_i             (st1_req_is_cmo_flush),
@@ -735,6 +756,10 @@ import hpdcache_pkg::*;
         .cmo_wait_i,
         .cmo_req_valid_o,
         .cmo_core_rsp_ready_o,
+
+        .csr_busy_i,
+        .csr_req_valid_o,
+        .csr_core_rsp_ready_o,
 
         .cfg_prefetch_updt_plru_i,
         .cfg_default_wb_i,
@@ -1202,6 +1227,16 @@ import hpdcache_pkg::*;
     assign uc_req_op_o.is_amo_maxu   = st1_req_is_amo_maxu;
     assign uc_req_op_o.is_amo_min    = st1_req_is_amo_min;
     assign uc_req_op_o.is_amo_minu   = st1_req_is_amo_minu;
+    //  }}}
+
+    //  CSR request handler outputs
+    //  {{{
+    assign csr_req_is_load_o    = st1_req_is_load,
+           csr_req_is_store_o   = st1_req_is_store,
+           csr_req_addr_o       = st1_req_addr - (CFIG_BASE << 12),
+           csr_req_tid_o        = st1_req.tid,
+           csr_req_sid_o        = st1_req.sid,
+           csr_req_wdata_o      = st1_req.wdata;
     //  }}}
 
     //  CMO request handler outputs
@@ -1713,24 +1748,29 @@ import hpdcache_pkg::*;
     assign core_rsp_valid_o   = refill_core_rsp_valid_i |
                                 (uc_core_rsp_valid_i & uc_core_rsp_ready_o) |
                                 (cmo_core_rsp_valid_i & cmo_core_rsp_ready_o) |
+                                (csr_core_rsp_valid_i & csr_core_rsp_ready_o) |
                                 core_rsp_valid;
     assign core_rsp_o.rdata   = (refill_core_rsp_valid_i ? refill_core_rsp_i.rdata :
                                 (cmo_core_rsp_valid_i    ? cmo_core_rsp_i.rdata :
                                 (uc_core_rsp_valid_i     ? uc_core_rsp_i.rdata :
-                                                           data_req_read_data)));
+                                (csr_core_rsp_valid_i    ? csr_core_rsp_i.rdata :
+                                                           data_req_read_data))));
     assign core_rsp_o.sid     = (refill_core_rsp_valid_i ? refill_core_rsp_i.sid :
                                 (cmo_core_rsp_valid_i    ? cmo_core_rsp_i.sid :
                                 (uc_core_rsp_valid_i     ? uc_core_rsp_i.sid :
-                                                           core_rsp_sid)));
+                                (csr_core_rsp_valid_i    ? csr_core_rsp_i.sid :
+                                                           core_rsp_sid))));
     assign core_rsp_o.tid     = (refill_core_rsp_valid_i ? refill_core_rsp_i.tid :
                                 (cmo_core_rsp_valid_i    ? cmo_core_rsp_i.tid :
                                 (uc_core_rsp_valid_i     ? uc_core_rsp_i.tid :
-                                                           core_rsp_tid)));
+                                (csr_core_rsp_valid_i    ? csr_core_rsp_i.tid :
+                                                           core_rsp_tid))));
     assign core_rsp_o.error   = (refill_core_rsp_valid_i ? refill_core_rsp_i.error :
                                 (cmo_core_rsp_valid_i    ? cmo_core_rsp_i.error :
                                 (uc_core_rsp_valid_i     ? uc_core_rsp_i.error :
-                                                           core_rsp_error)));
-    assign core_rsp_o.aborted = core_rsp_aborted;
+                                (csr_core_rsp_valid_i    ? csr_core_rsp_i.error :
+                                                           core_rsp_error))));
+    assign core_rsp_o.aborted = st1_rsp_aborted;
     //  }}}
 
     //  Assertions

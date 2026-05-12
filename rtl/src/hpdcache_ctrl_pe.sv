@@ -47,6 +47,7 @@ import hpdcache_pkg::*;
     input  logic                   st0_req_is_load_i,
     input  logic                   st0_req_is_scrub_i,
     input  logic                   st0_req_is_store_i,
+    input  logic                   st0_req_is_csr_i,
     input  logic                   st0_req_is_amo_i,
     input  logic                   st0_req_is_cmo_fence_i,
     input  logic                   st0_req_is_cmo_inval_i,
@@ -66,6 +67,7 @@ import hpdcache_pkg::*;
     input  logic                   st1_req_need_rsp_i,
     input  logic                   st1_req_is_load_i,
     input  logic                   st1_req_is_store_i,
+    input  logic                   st1_req_is_csr_i,
     input  logic                   st1_req_is_amo_i,
     input  logic                   st1_req_is_cmo_inval_i,
     input  logic                   st1_req_is_cmo_flush_i,
@@ -202,6 +204,13 @@ import hpdcache_pkg::*;
     output logic                   cmo_core_rsp_ready_o,
     //   }}}
 
+    //   CSR
+    //   {{{
+    input  logic                   csr_busy_i,
+    output logic                   csr_req_valid_o,
+    output logic                   csr_core_rsp_ready_o,
+    //   }}}
+
     //   Configuration
     //   {{{
     input  logic                   cfg_prefetch_updt_plru_i,
@@ -262,6 +271,7 @@ import hpdcache_pkg::*;
     //  {{{
     assign uc_core_rsp_ready_o  = ~refill_core_rsp_valid_i;
     assign cmo_core_rsp_ready_o = ~refill_core_rsp_valid_i;
+    assign csr_core_rsp_ready_o = ~refill_core_rsp_valid_i;
     //  }}}
 
     //  Replay logic
@@ -291,6 +301,8 @@ import hpdcache_pkg::*;
         automatic logic st2_nop; //  Do not consume a request in stage 0 because of stage 2 hazard
         automatic logic st0_req_is_pstore;
         automatic logic st0_req_is_pamo;
+
+        csr_req_valid_o                     = 1'b0;
 
         uc_req_valid_o                      = 1'b0;
 
@@ -470,6 +482,14 @@ import hpdcache_pkg::*;
                     st1_rtab_alloc_and_link = 1'b1;
                     st1_nop = 1'b1;
                 end
+
+                //  CSR request
+                //  {{{
+                else if (st1_req_is_csr_i) begin
+                    csr_req_valid_o = 1'b1;
+                    st1_nop         = 1'b1;
+                end
+                //  }}}
 
                 //  CMO fence or invalidate
                 //  {{{
@@ -1193,6 +1213,7 @@ import hpdcache_pkg::*;
                                & ~rtab_req_valid_i
                                & ~refill_req_valid_i
                                & ~rtab_full_i
+                               & ~csr_busy_i
                                & ~cmo_busy_i
                                & ~uc_busy_i
                                & ~err_busy_i
@@ -1232,7 +1253,7 @@ import hpdcache_pkg::*;
             //          removes the timing paths RAM-to-RAM between the cache
             //          directory and the data array.
             if ((core_req_ready_o | rtab_req_ready_o | scrub_req_ready_o)
-                && !st0_req_is_error_i)
+                && !st0_req_is_error_i && !st0_req_is_csr_i)
             begin
                 // cacheable-only data read path
                 if(!st0_req_is_uncacheable_i) begin

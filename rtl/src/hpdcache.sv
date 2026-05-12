@@ -47,7 +47,9 @@ import hpdcache_pkg::*;
     parameter type hpdcache_mem_resp_w_t = logic,
     //  }}}
 
-    localparam type hpdcache_nline_t = logic [HPDcacheCfg.nlineWidth-1:0]
+    localparam type hpdcache_nline_t = logic [HPDcacheCfg.nlineWidth-1:0],
+
+    parameter unsigned CFIG_BASE = 'h42
 )
     //  }}}
 
@@ -316,6 +318,18 @@ import hpdcache_pkg::*;
     logic                  cmo_core_rsp_valid;
     hpdcache_rsp_t         cmo_core_rsp;
 
+    logic                  csr_req_valid;
+    logic                  csr_req_ready;
+    logic                  csr_req_is_load;
+    logic                  csr_req_is_store;
+    hpdcache_req_addr_t    csr_req_addr;
+    hpdcache_req_data_t    csr_req_wdata;
+    hpdcache_req_sid_t     csr_req_sid;
+    hpdcache_req_tid_t     csr_req_tid;
+    logic                  csr_core_rsp_ready;
+    logic                  csr_core_rsp_valid;
+    hpdcache_rsp_t         csr_core_rsp;
+
     logic                  flush_empty;
     logic                  flush_busy;
     hpdcache_nline_t       flush_check_nline;
@@ -476,7 +490,8 @@ import hpdcache_pkg::*;
         .hpdcache_req_data_t                (hpdcache_req_data_t),
         .hpdcache_req_be_t                  (hpdcache_req_be_t),
         .hpdcache_req_t                     (hpdcache_req_t),
-        .hpdcache_rsp_t                     (hpdcache_rsp_t)
+        .hpdcache_rsp_t                     (hpdcache_rsp_t),
+        .CFIG_BASE                          (CFIG_BASE)
     ) hpdcache_ctrl_i(
         .clk_i,
         .rst_ni,
@@ -644,6 +659,18 @@ import hpdcache_pkg::*;
 
         .mshr_empty_i                       (miss_mshr_empty),
         .flush_empty_i                      (flush_empty),
+
+        .csr_busy_i                         (~csr_req_ready),
+        .csr_req_valid_o                    (csr_req_valid),
+        .csr_req_is_load_o                  (csr_req_is_load),
+        .csr_req_is_store_o                 (csr_req_is_store),
+        .csr_req_addr_o                     (csr_req_addr),
+        .csr_req_wdata_o                    (csr_req_wdata),
+        .csr_req_sid_o                      (csr_req_sid),
+        .csr_req_tid_o                      (csr_req_tid),
+        .csr_core_rsp_ready_o               (csr_core_rsp_ready),
+        .csr_core_rsp_valid_i               (csr_core_rsp_valid),
+        .csr_core_rsp_i                     (csr_core_rsp),
 
         .rtab_empty_o                       (rtab_empty),
         .ctrl_empty_o                       (ctrl_empty),
@@ -1003,6 +1030,38 @@ import hpdcache_pkg::*;
         .flush_alloc_ready_i           (flush_alloc_ready),
         .flush_alloc_nline_o           (cmo_flush_alloc_nline),
         .flush_alloc_way_o             (cmo_flush_alloc_way)
+    );
+    //  }}}
+
+    //  CSR Request Handler
+    //  {{{
+    hpdcache_csr #(
+        .HPDcacheCfg                   (HPDcacheCfg),
+
+        .hpdcache_rsp_t                (hpdcache_rsp_t),
+        .hpdcache_req_addr_t           (hpdcache_req_addr_t),
+        .hpdcache_req_tid_t            (hpdcache_req_tid_t),
+        .hpdcache_req_sid_t            (hpdcache_req_sid_t),
+        .hpdcache_req_data_t           (hpdcache_req_data_t)
+    ) hpdcache_csr_i (
+        .clk_i,
+        .rst_ni,
+
+        .req_valid_i                   (csr_req_valid),
+        .req_ready_o                   (csr_req_ready),
+        .req_is_load_i                 (csr_req_is_load),
+        .req_is_store_i                (csr_req_is_store),
+        .req_addr_i                    (csr_req_addr),
+        .req_wdata_i                   (csr_req_wdata),
+        .req_sid_i                     (csr_req_sid),
+        .req_tid_i                     (csr_req_tid),
+
+        .rsp_ready_i                   (csr_core_rsp_ready),
+        .rsp_valid_o                   (csr_core_rsp_valid),
+        .rsp_o                         (csr_core_rsp),
+
+        .csr_pinned_addr_start_o       (/* TODO: open */),
+        .csr_pinned_addr_size_o        (/* TODO: open */)
     );
     //  }}}
 
