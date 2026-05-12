@@ -1,0 +1,21 @@
+indentation_spaces: 4
+tab_width: 4
+use_tab: false
+
+# Keep your exact manual structure
+preserve_hierarchy: true
+preserve_module_begin_end_newlines: true
+preserve_port_block_newlines: true
+preserve_parameter_block_newlines: true
+preserve_initialization_spacing: true
+
+# Keep folding markers and comment alignment
+wrap_comments: false
+
+# Keep your alignment of parameters and ports
+align_port_declarations: true
+align_parameter_declarations: true
+align_named_port_connections: true
+
+# Prevent Verible from rewriting the module header
+max_search_states: 0
