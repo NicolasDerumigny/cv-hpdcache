@@ -294,9 +294,8 @@ import hpdcache_pkg::*;
     assign lrsc_uc_nline    = req_addr_i[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
     assign lrsc_uc_word     = req_addr_i[0 +: HPDcacheCfg.clOffsetWidth] >> 3;
 
-    genvar gen_req_id;
     generate
-      for (gen_req_id = 0; gen_req_id < HPDcacheCfg.u.nRequesters; gen_req_id++) begin : gen_lrsc_rsrv_hits
+      for (genvar gen_req_id = 0; gen_req_id < HPDcacheCfg.u.nRequesters; gen_req_id++) begin : gen_lrsc_rsrv_hits
           assign lrsc_rsrv_nline  [gen_req_id] = lrsc_rsrv_addr_q[gen_req_id][HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
           assign lrsc_rsrv_word   [gen_req_id] = lrsc_rsrv_addr_q[gen_req_id][0 +: HPDcacheCfg.clOffsetWidth] >> 3;
           assign lrsc_snoop_hit   [gen_req_id] = lrsc_rsrv_valid_q[gen_req_id] & (lrsc_rsrv_nline[gen_req_id] == lrsc_snoop_nline) &
