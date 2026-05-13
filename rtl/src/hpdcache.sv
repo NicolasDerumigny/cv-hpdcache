@@ -329,6 +329,10 @@ import hpdcache_pkg::*;
     logic                  csr_core_rsp_ready;
     logic                  csr_core_rsp_valid;
     hpdcache_rsp_t         csr_core_rsp;
+    logic                  csr_dir_read_tag;
+    hpdcache_way_vector_t  csr_dir_way;
+    hpdcache_tag_t         csr_dir_tag;
+    hpdcache_data_word_t   csr_dir_pinned;
 
     logic                  flush_empty;
     logic                  flush_busy;
@@ -671,6 +675,10 @@ import hpdcache_pkg::*;
         .csr_core_rsp_ready_o               (csr_core_rsp_ready),
         .csr_core_rsp_valid_i               (csr_core_rsp_valid),
         .csr_core_rsp_i                     (csr_core_rsp),
+        .csr_dir_read_tag_i                 (csr_dir_read_tag),
+        .csr_dir_way_i                      (csr_dir_way),
+        .csr_dir_tag_o                      (csr_dir_tag),
+        .csr_dir_pinned_o                   (csr_dir_pinned),
 
         .rtab_empty_o                       (rtab_empty),
         .ctrl_empty_o                       (ctrl_empty),
@@ -1042,7 +1050,12 @@ import hpdcache_pkg::*;
         .hpdcache_req_addr_t           (hpdcache_req_addr_t),
         .hpdcache_req_tid_t            (hpdcache_req_tid_t),
         .hpdcache_req_sid_t            (hpdcache_req_sid_t),
-        .hpdcache_req_data_t           (hpdcache_req_data_t)
+        .hpdcache_req_data_t           (hpdcache_req_data_t),
+
+        .hpdcache_data_word_t          (hpdcache_data_word_t),
+        .hpdcache_way_vector_t         (hpdcache_way_vector_t),
+        .hpdcache_set_t                (hpdcache_set_t),
+        .hpdcache_tag_t                (hpdcache_tag_t)
     ) hpdcache_csr_i (
         .clk_i,
         .rst_ni,
@@ -1059,6 +1072,11 @@ import hpdcache_pkg::*;
         .rsp_ready_i                   (csr_core_rsp_ready),
         .rsp_valid_o                   (csr_core_rsp_valid),
         .rsp_o                         (csr_core_rsp),
+
+        .dir_read_tag_o                (csr_dir_read_tag),
+        .dir_way_o                     (csr_dir_way),
+        .dir_tag_i                     (csr_dir_tag),
+        .dir_pinned_i                  (csr_dir_pinned),
 
         .csr_pinned_addr_start_o       (/* TODO: open */),
         .csr_pinned_addr_size_o        (/* TODO: open */)

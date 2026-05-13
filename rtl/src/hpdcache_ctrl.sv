@@ -245,6 +245,10 @@ import hpdcache_pkg::*;
     output  logic                 csr_core_rsp_ready_o,
     input   logic                 csr_core_rsp_valid_i,
     input   hpdcache_rsp_t        csr_core_rsp_i,
+    input   logic                 csr_dir_read_tag_i,
+    input   hpdcache_way_vector_t csr_dir_way_i,
+    output  hpdcache_tag_t        csr_dir_tag_o,
+    output  hpdcache_data_word_t  csr_dir_pinned_o,
 
     output logic                  rtab_empty_o,
     output logic                  ctrl_empty_o,
@@ -537,7 +541,7 @@ import hpdcache_pkg::*;
 
     assign st0_req_is_partial = (hpdcache_uint'(st0_req.req.size) < HPDcacheCfg.wordByteIdxWidth);
     assign st0_req_addr       = {st0_req.req.addr_tag, st0_req.req.addr_offset};
-    assign st0_req_is_csr     = (st0_req_addr >> 12) == CFIG_BASE;
+    assign st0_req_is_csr     = (st0_req_addr >> 20) == CFIG_BASE;
     //  }}}
 
     //  Decode operation in stage 1
@@ -581,6 +585,7 @@ import hpdcache_pkg::*;
     assign st1_req_is_uncacheable  = ~cfg_enable_i | st1_req.req.pma.uncacheable;
     assign st1_req_is_load         =         is_load(st1_req.req.op) & ~st1_req.err_scrubbing;
     assign st1_req_is_store        =        is_store(st1_req.req.op);
+    assign st1_req_is_csr          =   (st1_req_addr >> 20) == CFIG_BASE;
     assign st1_req_is_amo          =          is_amo(st1_req.req.op);
     assign st1_req_is_amo_lr       =       is_amo_lr(st1_req.req.op);
     assign st1_req_is_amo_sc       =       is_amo_sc(st1_req.req.op);
@@ -1027,6 +1032,7 @@ import hpdcache_pkg::*;
         .hpdcache_nline_t              (hpdcache_nline_t),
         .hpdcache_tag_t                (hpdcache_tag_t),
         .hpdcache_set_t                (hpdcache_set_t),
+        .hpdcache_way_t                (hpdcache_way_t),
         .hpdcache_word_t               (hpdcache_word_t),
         .hpdcache_way_vector_t         (hpdcache_way_vector_t),
         .hpdcache_dir_entry_t          (hpdcache_dir_entry_t),
@@ -1061,6 +1067,16 @@ import hpdcache_pkg::*;
         .dir_updt_wback_i              (st2_dir_updt_wback_q),
         .dir_updt_dirty_i              (st2_dir_updt_dirty_q),
         .dir_updt_fetch_i              (st2_dir_updt_fetch_q),
+
+        .dir_csr_read_tag_i            (csr_dir_read_tag_i),
+        .dir_csr_way_i                 (csr_dir_way_i),
+        .dir_csr_pinned_o              (csr_dir_pinned_o),
+
+        .dir_amo_match_i               (uc_dir_amo_match_i),
+        .dir_amo_match_set_i           (uc_dir_amo_match_set_i),
+        .dir_amo_match_tag_i           (uc_dir_amo_match_tag_i),
+        .dir_amo_updt_sel_victim_i     (uc_dir_amo_updt_sel_victim_i),
+        .dir_amo_hit_way_o             (uc_dir_amo_hit_way_o),
 
         .dir_refill_i                  (refill_write_dir_i),
         .dir_refill_set_i              (refill_set_i),
@@ -1171,6 +1187,11 @@ import hpdcache_pkg::*;
     assign cachedir_hit_o = st1_dir_hit;
     //  }}}
 
+    //  CSR / pinned cache hooks
+    //  {{{
+    assign csr_dir_tag_o = st1_dir_hit_tag;
+    //  }}}
+
     //  Write buffer outputs
     //  {{{
     assign wbuf_write_addr_o = st1_req_addr;
@@ -1233,7 +1254,7 @@ import hpdcache_pkg::*;
     //  {{{
     assign csr_req_is_load_o    = st1_req_is_load,
            csr_req_is_store_o   = st1_req_is_store,
-           csr_req_addr_o       = st1_req_addr - (CFIG_BASE << 12),
+           csr_req_addr_o       = st1_req_addr - (CFIG_BASE << 20),
            csr_req_tid_o        = st1_req.tid,
            csr_req_sid_o        = st1_req.sid,
            csr_req_wdata_o      = st1_req.wdata;

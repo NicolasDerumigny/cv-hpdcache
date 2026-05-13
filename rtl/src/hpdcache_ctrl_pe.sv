@@ -1286,6 +1286,8 @@ import hpdcache_pkg::*;
                 if (HPDcacheCfg.u.eccEn && HPDcacheCfg.u.eccScrubberEn) begin
                     st0_req_cachedir_read_o |= st0_req_is_scrub_i;
                 end
+            end else if (core_req_ready_o && st0_req_is_csr_i) begin
+                st0_req_cachedir_read_o = 1'b1;
             end
             //      }}}
             //  }}}

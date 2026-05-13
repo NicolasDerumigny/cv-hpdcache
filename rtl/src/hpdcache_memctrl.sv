@@ -20,6 +20,7 @@ import hpdcache_pkg::*;
     parameter type hpdcache_nline_t = logic,
     parameter type hpdcache_tag_t = logic,
     parameter type hpdcache_set_t = logic,
+    parameter type hpdcache_way_t = logic,
     parameter type hpdcache_word_t = logic,
     parameter type hpdcache_way_vector_t = logic,
     parameter type hpdcache_dir_entry_t = logic,
@@ -70,6 +71,16 @@ import hpdcache_pkg::*;
     input  logic                                dir_updt_wback_i,
     input  logic                                dir_updt_dirty_i,
     input  logic                                dir_updt_fetch_i,
+
+    input  logic                                dir_csr_read_tag_i,
+    input  hpdcache_way_vector_t                dir_csr_way_i,
+    output hpdcache_data_word_t                 dir_csr_pinned_o,
+
+    input  logic                                dir_amo_match_i,
+    input  hpdcache_set_t                       dir_amo_match_set_i,
+    input  hpdcache_tag_t                       dir_amo_match_tag_i,
+    input  logic                                dir_amo_updt_sel_victim_i,
+    output hpdcache_way_vector_t                dir_amo_hit_way_o,
 
     input  logic                                dir_refill_i,
     input  hpdcache_set_t                       dir_refill_set_i,
@@ -658,6 +669,12 @@ import hpdcache_pkg::*;
         assign dir_hit_way_o[gen_i]                 = dir_valid[gen_i] & req_hit[gen_i];
         assign dir_cmo_check_nline_hit_way_o[gen_i] = dir_valid[gen_i] & cmo_hit[gen_i];
         assign dir_inval_hit_way[gen_i]             = dir_valid[gen_i] & inval_hit[gen_i];
+      end
+
+    assign dir_csr_pinned_o[HPDcacheCfg.u.wordWidth-1 : HPDcacheCfg.u.ways] = '0;
+    for (gen_i = 0; gen_i < int'(HPDcacheCfg.u.ways); gen_i++)
+    begin : gen_dir_csr_pinned
+        assign dir_csr_pinned_o[gen_i] = dir_valid[gen_i];
     end
 
     hpdcache_mux #(
@@ -666,7 +683,7 @@ import hpdcache_pkg::*;
         .ONE_HOT_SEL (1'b1)
     ) hit_tag_mux_i(
         .data_i      (dir_tags),
-        .sel_i       (dir_hit_way_o),
+        .sel_i       (dir_csr_read_tag_i ? dir_csr_way_i : dir_hit_way_o),
         .data_o      (dir_hit_tag_o)
     );
 

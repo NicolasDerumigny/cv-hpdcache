@@ -37,7 +37,12 @@ import hpdcache_pkg::*;
     parameter type hpdcache_req_addr_t = logic,
     parameter type hpdcache_req_tid_t = logic,
     parameter type hpdcache_req_sid_t = logic,
-    parameter type hpdcache_req_data_t = logic
+    parameter type hpdcache_req_data_t = logic,
+
+    parameter type hpdcache_data_word_t = logic,
+    parameter type hpdcache_way_vector_t = logic,
+    parameter type hpdcache_set_t = logic,
+    parameter type hpdcache_tag_t = logic
 )
     // }}}
 
@@ -62,6 +67,12 @@ import hpdcache_pkg::*;
     output logic                  rsp_valid_o,
     output hpdcache_rsp_t         rsp_o,
 
+    //     Cache state interface
+    output logic                  dir_read_tag_o,
+    output hpdcache_way_vector_t  dir_way_o,
+    input  hpdcache_tag_t         dir_tag_i,
+    input  hpdcache_data_word_t   dir_pinned_i,
+
     //     CSR values
     //     Start of pinned address region (PA)
     output hpdcache_req_addr_t    csr_pinned_addr_start_o,
@@ -70,12 +81,20 @@ import hpdcache_pkg::*;
 );
     // }}}
 
-    //  Definition of internal constants
+    //  Definition of internal constants and types
     //  {{{
+    localparam int unsigned WORD_TO_PA_PADDING = HPDcacheCfg.u.wordWidth - HPDcacheCfg.u.paWidth;
+
+    typedef enum logic [3:0] {
+        HPDCACHE_CFG_REG        = 'h0,
+        HPDCACHE_CL_ADDR        = 'h1,
+        HPDCACHE_PINNED_STATUS  = 'h2
+    } hpdcache_cfg_offset_e;
+
     typedef enum logic [11:0] {
         HPDCACHE_PINNED_AREA_START = 'h00,
         HPDCACHE_PINNED_AREA_SIZE  = 'h08
-    } hpdcache_cfg_offset_e;
+    } hpdcache_cfg_reg_offset_e;
     //  }}}
 
     //  Definition of internal registers
@@ -117,34 +136,83 @@ import hpdcache_pkg::*;
         rsp_d.rdata = stalling ? rsp_q.rdata :   '0;
         rsp_d.error = stalling ? rsp_q.error : 1'b0;
 
-        if (req_valid_i && !stalling) begin
-            if (req_is_store_i) begin
-                unique case (req_addr_i[11:0])
-                    HPDCACHE_PINNED_AREA_START: begin
-                        csr_pinned_addr_start_d = req_wdata_i;
-                    end
-                    HPDCACHE_PINNED_AREA_SIZE: begin
-                        csr_pinned_addr_size_d = req_wdata_i;
-                    end
-                    default: begin
-                        rsp_d.error = 'b1;
-                    end
-                endcase
-            end else if (req_is_load_i) begin
-                rsp_valid_d = 'b1;
+        dir_way_o = '0;
+        dir_read_tag_o = '0;
 
-                unique case (req_addr_i[11:0])
-                    HPDCACHE_PINNED_AREA_START: begin
-                        rsp_d.rdata = csr_pinned_addr_start_q;
-                    end
-                    HPDCACHE_PINNED_AREA_SIZE: begin
-                        rsp_d.rdata = csr_pinned_addr_size_q;
-                    end
-                    default: begin
+        if (req_valid_i && !stalling) begin
+            unique case (req_addr_i[19:16])
+            HPDCACHE_CFG_REG: begin
+                    if (req_addr_i[15:12] != '0) begin
                         rsp_d.error = 'b1;
                     end
-                endcase
-            end
+                    if (req_is_store_i) begin
+                        unique case (req_addr_i[11:0])
+                            HPDCACHE_PINNED_AREA_START: begin
+                                csr_pinned_addr_start_d = req_wdata_i[0][HPDcacheCfg.u.paWidth-1:0];
+                            end
+                            HPDCACHE_PINNED_AREA_SIZE: begin
+                                csr_pinned_addr_size_d = req_wdata_i[0][HPDcacheCfg.u.paWidth-1:0];
+                            end
+                            default: begin
+                                rsp_d.error = 'b1;
+                            end
+                        endcase
+                    end else if (req_is_load_i) begin
+                        rsp_valid_d = 'b1;
+
+                        unique case (req_addr_i[11:0])
+                            HPDCACHE_PINNED_AREA_START: begin
+                                rsp_d.rdata[0] = {{WORD_TO_PA_PADDING{1'b0}}, csr_pinned_addr_start_q};
+                            end
+                            HPDCACHE_PINNED_AREA_SIZE: begin
+                                rsp_d.rdata[0] = {{WORD_TO_PA_PADDING{1'b0}}, csr_pinned_addr_size_q};
+                            end
+                            default: begin
+                                rsp_d.error = 'b1;
+                            end
+                        endcase
+                    end
+                end
+                HPDCACHE_CL_ADDR: begin
+                    // Format is:
+                    // 64         20     16    setWi+clOffWi           clOffWi             0
+                    // | CFIG_BASE | 0001 |      way      |       set       |      0       |
+                    if (req_addr_i[HPDcacheCfg.clOffsetWidth-1:0] != '0) begin
+                        rsp_d.error = 'b1;
+                    end
+                    if (req_is_load_i) begin
+                        rsp_valid_d = 'b1;
+                        dir_read_tag_o = 'b1;
+                        // We encode ways in the upper level bits, check that it does not conflict with
+                        // the address (CFG_BASE << 20) | (HPDCACHE_CL_ADDR << 16)
+                        assert(HPDcacheCfg.clOffsetWidth + HPDcacheCfg.setWidth + HPDcacheCfg.wayIndexWidth <= 16);
+                        dir_way_o[req_addr_i[HPDcacheCfg.clOffsetWidth + HPDcacheCfg.setWidth +: HPDcacheCfg.wayIndexWidth]] = 1'b1;
+                        rsp_d.rdata = {{WORD_TO_PA_PADDING{1'b0}},
+                                        dir_tag_i,
+                                        req_addr_i[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.setWidth],
+                                        {HPDcacheCfg.clOffsetWidth{1'b0}}};
+                    end
+                end
+                HPDCACHE_PINNED_STATUS: begin
+                    // Format is:
+                    // 64         20     16    setWi+clOffWi           clOffWi             0
+                    // | CFIG_BASE | 0002 |      0        |       set       |      0       |
+                    if (req_addr_i[HPDcacheCfg.clOffsetWidth + HPDcacheCfg.setWidth +: HPDcacheCfg.wayIndexWidth] != '0
+                            || req_addr_i[HPDcacheCfg.clOffsetWidth-1:0] != '0) begin
+                        rsp_d.error = 'b1;
+                    end
+
+                    if (req_is_load_i) begin
+                        rsp_valid_d = 'b1;
+                        rsp_d.rdata = {dir_pinned_i};
+                    end
+                end
+                default: begin
+                    if (req_is_load_i) begin
+                        rsp_valid_d = 'b1;
+                    end
+                end
+            endcase
         end
     end
 
