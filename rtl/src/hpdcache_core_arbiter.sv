@@ -24,14 +24,18 @@
  *  Description   : HPDcache request arbiter
  *  History       :
  */
+// FIXME: TODO test & implement stall / replay logic on virtual address translated
 module hpdcache_core_arbiter
 import hpdcache_pkg::*;
     //  Parameters
     //  {{{
 #(
     parameter hpdcache_cfg_t HPDcacheCfg = '0,
+    parameter type hpdcache_set_t = logic,
     parameter type hpdcache_tag_t = logic,
     parameter type hpdcache_req_t = logic,
+    parameter type hpdcache_req_addr_t = logic,
+    parameter type hpdcache_req_offset_t = logic,
     parameter type hpdcache_rsp_t = logic
 )
     //  }}}
@@ -42,6 +46,13 @@ import hpdcache_pkg::*;
     //      Clock and reset signals
     input  logic                          clk_i,
     input  logic                          rst_ni,
+
+    //      Pinned set state
+    input  logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_i,
+
+    //      Pinned region
+    input  hpdcache_req_addr_t            csr_pinned_addr_start_i,
+    input  hpdcache_req_addr_t            csr_pinned_addr_size_i,
 
     //      Core request interface
     //         1st cycle
@@ -63,8 +74,10 @@ import hpdcache_pkg::*;
     output logic                          arb_req_valid_o,
     input  logic                          arb_req_ready_i,
     output hpdcache_req_t                 arb_req_o,
+    output logic                          arb_req_early_pinned_o,
     output logic                          arb_abort_o,
     output hpdcache_tag_t                 arb_tag_o,
+    output logic                          arb_req_pinned_o,
     output hpdcache_pma_t                 arb_pma_o
 );
 
@@ -72,13 +85,20 @@ import hpdcache_pkg::*;
 
     //  Declaration of internal signals
     //  {{{
-    logic          [HPDcacheCfg.u.nRequesters-1:0] core_req_valid;
-    hpdcache_req_t [HPDcacheCfg.u.nRequesters-1:0] core_req;
-    logic          [HPDcacheCfg.u.nRequesters-1:0] core_req_abort;
-    hpdcache_tag_t [HPDcacheCfg.u.nRequesters-1:0] core_req_tag;
-    hpdcache_pma_t [HPDcacheCfg.u.nRequesters-1:0] core_req_pma;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_valid;
+    hpdcache_req_t      [HPDcacheCfg.u.nRequesters-1:0] core_req;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_abort;
+    hpdcache_tag_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_tag;
+    hpdcache_pma_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_pma;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_pinned;
+    hpdcache_set_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_early_set;
+    hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_early_addr;
+    hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_addr;
+    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned_conflict;
 
     logic [HPDcacheCfg.u.nRequesters-1:0] arb_req_gnt_q, arb_req_gnt_d;
+    hpdcache_req_offset_t                 arb_req_addr_offset_q;
     //  }}}
 
     //  Requesters arbiter
@@ -88,6 +108,19 @@ import hpdcache_pkg::*;
 
     generate
         for (gen_i = 0; gen_i < int'(HPDcacheCfg.u.nRequesters); gen_i++) begin : gen_core_req
+            assign core_req_early_addr[gen_i]     = {core_req_i[gen_i].addr_tag, core_req_i[gen_i].addr_offset};
+            assign core_req_early_pinned[gen_i]   = (core_req_early_addr[gen_i] >= csr_pinned_addr_start_i) &&
+                                                   ((core_req_early_addr[gen_i] - csr_pinned_addr_size_i) < csr_pinned_addr_start_i);
+            assign core_req_early_set[gen_i]      = core_req_i[gen_i].addr_offset[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.setWidth];
+            // No conflicts on cycle 1, as all store req are physically indexed in the CVA6
+            assign core_req_early_pinned_conflict[gen_i] = core_req_i[gen_i].phys_indexed && sets_fully_pinned_i[core_req_early_set[gen_i]]
+                                                           && core_req_early_pinned[gen_i]
+                                                           && !(is_cmo_inval(core_req_i[gen_i].op) || is_cmo_flush(core_req_i[gen_i].op));
+
+            assign core_req_addr[gen_i]            = {core_req_tag[gen_i], arb_req_addr_offset_q};
+            assign core_req_pinned[gen_i]          = (core_req_addr[gen_i] >= csr_pinned_addr_start_i) &&
+                                                   ((core_req_addr[gen_i] - csr_pinned_addr_size_i) < csr_pinned_addr_start_i);
+
             assign core_req_ready_o[gen_i] = arb_req_gnt_d[gen_i] & arb_req_ready_i,
                    core_req_valid[gen_i]   = core_req_valid_i[gen_i],
                    core_req[gen_i]         = core_req_i[gen_i];
@@ -103,7 +136,7 @@ import hpdcache_pkg::*;
     (
         .clk_i,
         .rst_ni,
-        .req_i          (core_req_valid),
+        .req_i          (core_req_valid & ~core_req_early_pinned_conflict),
         .gnt_o          (arb_req_gnt_d),
         .ready_i        (arb_req_ready_i)
     );
@@ -117,6 +150,28 @@ import hpdcache_pkg::*;
         .data_i         (core_req),
         .sel_i          (arb_req_gnt_d),
         .data_o         (arb_req_o)
+    );
+
+    //      Early pinned multiplexor
+    hpdcache_mux #(
+        .NINPUT         (HPDcacheCfg.u.nRequesters),
+        .DATA_WIDTH     (1),
+        .ONE_HOT_SEL    (1'b1)
+    ) core_req_early_pinned_mux_i (
+        .data_i         (core_req_early_pinned),
+        .sel_i          (arb_req_gnt_d),
+        .data_o         (arb_req_early_pinned_o)
+    );
+
+    //      Pinned multiplexor
+    hpdcache_mux #(
+        .NINPUT         (HPDcacheCfg.u.nRequesters),
+        .DATA_WIDTH     (1),
+        .ONE_HOT_SEL    (1'b1)
+    ) core_req_pinned_mux_i (
+        .data_i         (core_req_pinned),
+        .sel_i          (arb_req_gnt_q),
+        .data_o         (arb_req_pinned_o)
     );
 
     //      Request abort multiplexor
@@ -152,11 +207,16 @@ import hpdcache_pkg::*;
         .data_o         (arb_pma_o)
     );
 
-    //      Save the grant signal for the tag in the next cycle
+    //      Save the grant signal and the offset for the tag in the next cycle
     always_ff @(posedge clk_i or negedge rst_ni)
     begin : arb_req_gnt_ff
-        if (!rst_ni) arb_req_gnt_q <= '0;
-        else         arb_req_gnt_q <= arb_req_gnt_d;
+        if (!rst_ni) begin
+            arb_req_gnt_q <= '0;
+            arb_req_addr_offset_q <= '0;
+        end else begin
+            arb_req_gnt_q <= arb_req_gnt_d;
+            arb_req_addr_offset_q <= arb_req_o.addr_offset;
+        end
     end
 
     assign arb_req_valid_o = |arb_req_gnt_d;

@@ -78,15 +78,18 @@ import hpdcache_pkg::*;
     input  logic                   st1_req_is_cmo_fence_i,
     input  logic                   st1_req_is_cmo_prefetch_i,
     input  logic                   st1_req_is_partial_i,
+    input  logic                   st1_req_is_pinned_i,
     input  logic                   st1_req_wr_wt_i,
     input  logic                   st1_req_wr_wb_i,
     input  logic                   st1_req_wr_auto_i,
     input  logic                   st1_dir_hit_i,
+    input  logic                   st1_dir_hit_pinned_i,
     input  logic                   st1_dir_hit_wback_i,
     input  logic                   st1_dir_hit_dirty_i,
     input  logic                   st1_dir_hit_fetch_i,
     input  logic                   st1_dir_victim_unavailable_i,
     input  logic                   st1_dir_victim_valid_i,
+    input  logic                   st1_dir_victim_pinned_i,
     input  logic                   st1_dir_victim_wback_i,
     input  logic                   st1_dir_victim_dirty_i,
     input  logic                   st1_dir_err_cor_i,
@@ -117,21 +120,25 @@ import hpdcache_pkg::*;
     //   {{{
     input  logic                   st2_mshr_alloc_i,
     input  logic                   st2_mshr_alloc_is_prefetch_i,
+    input  logic                   st2_mshr_alloc_pinned_i,
     input  logic                   st2_mshr_alloc_wback_i,
     input  logic                   st2_mshr_alloc_dirty_i,
     output logic                   st2_mshr_alloc_o,
     output logic                   st2_mshr_alloc_cs_o,
     output logic                   st2_mshr_alloc_need_rsp_o,
+    output logic                   st2_mshr_alloc_pinned_o,
     output logic                   st2_mshr_alloc_wback_o,
     output logic                   st2_mshr_alloc_dirty_o,
 
     input  logic                   st2_dir_updt_i,
     input  logic                   st2_dir_updt_valid_i,
+    input  logic                   st2_dir_updt_pinned_i,
     input  logic                   st2_dir_updt_wback_i,
     input  logic                   st2_dir_updt_dirty_i,
     input  logic                   st2_dir_updt_fetch_i,
     output logic                   st2_dir_updt_o,
     output logic                   st2_dir_updt_valid_o,
+    output logic                   st2_dir_updt_pinned_o,
     output logic                   st2_dir_updt_wback_o,
     output logic                   st2_dir_updt_dirty_o,
     output logic                   st2_dir_updt_fetch_o,
@@ -350,6 +357,7 @@ import hpdcache_pkg::*;
         st2_mshr_alloc_o                    = st2_mshr_alloc_i;
         st2_mshr_alloc_cs_o                 = 1'b0;
         st2_mshr_alloc_need_rsp_o           = 1'b0;
+        st2_mshr_alloc_pinned_o             = st2_mshr_alloc_pinned_i;
         st2_mshr_alloc_wback_o              = st2_mshr_alloc_wback_i;
         st2_mshr_alloc_dirty_o              = st2_mshr_alloc_dirty_i;
 
@@ -357,6 +365,7 @@ import hpdcache_pkg::*;
 
         st2_dir_updt_o                      = st2_dir_updt_i;
         st2_dir_updt_valid_o                = st2_dir_updt_valid_i;
+        st2_dir_updt_pinned_o               = st2_dir_updt_pinned_i;
         st2_dir_updt_wback_o                = st2_dir_updt_wback_i;
         st2_dir_updt_dirty_o                = st2_dir_updt_dirty_i;
         st2_dir_updt_fetch_o                = st2_dir_updt_fetch_i;
@@ -617,8 +626,8 @@ import hpdcache_pkg::*;
                         // cache hit
                         else begin
                             st1_nop = 1'b1;
-                            // if the target cacheline is dirty, we need to flush it.
-                            if(st1_dir_hit_dirty_i) begin
+                            // if the target cacheline is dirty and unpinned, we need to flush it.
+                            if(st1_dir_hit_dirty_i && !st1_dir_hit_pinned_i) begin
                                 // flush controller is ready?
                                 // FIXME: this shall not happen as uncacheable requests are only
                                 //        process when there is no pending transactions
@@ -650,12 +659,14 @@ import hpdcache_pkg::*;
                                     uc_req_valid_o = 1'b1;
                                     st1_rtab_commit_o = st1_req_rtab_i;
                                     evt_uncached_req_o = 1'b1;
-                                    // invalidate the cacheline
-                                    st2_dir_updt_o = 1'b1;
-                                    st2_dir_updt_valid_o = 1'b0;
-                                    st2_dir_updt_wback_o = 1'b0;
-                                    st2_dir_updt_dirty_o = 1'b0;
-                                    st2_dir_updt_fetch_o = 1'b0;
+                                    // invalidate the cacheline if unpinned
+                                    if (!st1_dir_hit_pinned_i) begin
+                                        st2_dir_updt_o = 1'b1;
+                                        st2_dir_updt_valid_o = 1'b0;
+                                        st2_dir_updt_wback_o = 1'b0;
+                                        st2_dir_updt_dirty_o = 1'b0;
+                                        st2_dir_updt_fetch_o = 1'b0;
+                                    end
                                 end
                             end
                         end
@@ -738,8 +749,8 @@ import hpdcache_pkg::*;
                         else begin
                             st1_nop = 1'b1;
 
-                            if (st1_dir_hit_i) begin
-                                //  When the hit cacheline is dirty, flush its data to the memory
+                            if (st1_dir_hit_i && !st1_dir_hit_pinned_i) begin
+                                //  When the hit cacheline is dirty and unpinned, flush its data to the memory
                                 st2_flush_alloc_o = st1_dir_hit_dirty_i;
 
                                 //  Update the directory: an AMO request clears the dirty bit
@@ -750,6 +761,7 @@ import hpdcache_pkg::*;
                                 //  to the old data from the memory.
                                 st2_dir_updt_o = 1'b1;
                                 st2_dir_updt_valid_o = 1'b1;
+                                st2_dir_updt_pinned_o = 1'b0;
                                 st2_dir_updt_wback_o = st1_dir_hit_wback_i;
                                 st2_dir_updt_dirty_o = 1'b0;
 
@@ -787,8 +799,8 @@ import hpdcache_pkg::*;
                             //  A cache miss inserts a nop into the pipeline
                             st1_nop = 1'b1;
 
-                            //  If there is a match in the write buffer, send the entry right away
-                            wbuf_read_flush_hit_o = 1'b1;
+                            //  If there is a match in the write buffer, send a non-pinned entry right away
+                            wbuf_read_flush_hit_o = !st1_req_is_pinned_i;
 
                             //  Select a victim cacheline
                             st1_req_cachedir_sel_victim_o = 1'b1;
@@ -861,6 +873,7 @@ import hpdcache_pkg::*;
                                 //  Request a MSHR allocation
                                 st2_mshr_alloc_o = 1'b1;
                                 st2_mshr_alloc_need_rsp_o = st1_req_need_rsp_i;
+                                st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                 st2_mshr_alloc_wback_o = (st1_req_wr_auto_i & cfg_default_wb_i) |
                                                           st1_req_wr_wb_i;
                                 st2_mshr_alloc_dirty_o = 1'b0;
@@ -868,6 +881,7 @@ import hpdcache_pkg::*;
                                 //  Update the cache directory state to FETCHING
                                 st2_dir_updt_o = 1'b1;
                                 st2_dir_updt_valid_o = st1_dir_victim_valid_i;
+                                st2_dir_updt_pinned_o = st1_dir_victim_pinned_i;
                                 st2_dir_updt_wback_o = st1_dir_victim_wback_i;
                                 st2_dir_updt_dirty_o = 1'b0;
                                 st2_dir_updt_fetch_o = 1'b1;
@@ -922,8 +936,10 @@ import hpdcache_pkg::*;
                                     //  controller needs to update the state of the cacheline to WT
                                     if (st1_req_wr_wt_i && st1_dir_hit_wback_i) begin
                                         //  Update the directory state of the cacheline to WT
+                                        //  Pinned lines are never WT
                                         st2_dir_updt_o = 1'b1;
                                         st2_dir_updt_valid_o = 1'b1;
+                                        st2_dir_updt_pinned_o = 1'b0;
                                         st2_dir_updt_wback_o = 1'b0;
                                         st2_dir_updt_dirty_o = 1'b0;
                                         st2_dir_updt_fetch_o = 1'b0;
@@ -941,6 +957,7 @@ import hpdcache_pkg::*;
                                         //  Update the directory state of the cacheline to WB
                                         st2_dir_updt_o = 1'b1;
                                         st2_dir_updt_valid_o = 1'b1;
+                                        st2_dir_updt_pinned_o = st1_req_is_pinned_i;
                                         st2_dir_updt_wback_o = 1'b1;
                                         st2_dir_updt_dirty_o = 1'b0;
                                         st2_dir_updt_fetch_o = 1'b0;
@@ -1024,9 +1041,9 @@ import hpdcache_pkg::*;
                                 //  Select a victim cacheline
                                 st1_req_cachedir_sel_victim_o = 1'b1;
 
-                                //  If there is a match in the write buffer, send the entry right
+                                //  If there is a match in the write buffer, send a non-pinned entry right
                                 //  away
-                                wbuf_read_flush_hit_o = 1'b1;
+                                wbuf_read_flush_hit_o = !st1_req_is_pinned_i;
 
                                 //  Add a nop as the next cycle the controller needs to write in the
                                 //  MSHR and the directory
@@ -1075,12 +1092,14 @@ import hpdcache_pkg::*;
                                     //  Update the directory state of the cacheline to FETCHING
                                     st2_dir_updt_o = 1'b1;
                                     st2_dir_updt_valid_o = st1_dir_victim_valid_i;
+                                    st2_dir_updt_pinned_o = st1_dir_victim_pinned_i;
                                     st2_dir_updt_wback_o = st1_dir_victim_wback_i;
                                     st2_dir_updt_dirty_o = 1'b0;
                                     st2_dir_updt_fetch_o = 1'b1;
 
                                     //  Send a miss request to the memory (write-allocate)
                                     st2_mshr_alloc_o = 1'b1;
+                                    st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                     st2_mshr_alloc_wback_o = 1'b1;
 
                                     //  No available slot in the Coalesce Buffer:
@@ -1160,9 +1179,9 @@ import hpdcache_pkg::*;
                             //  {{{
                             else if (st1_req_wr_wb_i || (st1_req_wr_auto_i && st1_dir_hit_wback_i))
                             begin
-                                //  If there is a match in the write buffer, send the entry right
+                                //  If there is a match in the write buffer, send a non-pinned entry right
                                 //  away
-                                wbuf_read_flush_hit_o = 1'b1;
+                                wbuf_read_flush_hit_o = !st1_req_is_pinned_i;
 
                                 //  Hit on an entry of the write buffer: wait for the entry to be
                                 //  acknowledged.
@@ -1179,11 +1198,12 @@ import hpdcache_pkg::*;
                                 end else begin
                                     // Update the directory state of the cacheline to dirty
                                     if (!st1_dir_hit_wback_i || !st1_dir_hit_dirty_i) begin
-                                        st2_dir_updt_o       = 1'b1;
-                                        st2_dir_updt_valid_o = 1'b1;
-                                        st2_dir_updt_wback_o = 1'b1;
-                                        st2_dir_updt_dirty_o = 1'b1;
-                                        st2_dir_updt_fetch_o = 1'b0;
+                                        st2_dir_updt_o        = 1'b1;
+                                        st2_dir_updt_valid_o  = 1'b1;
+                                        st2_dir_updt_pinned_o = st1_req_is_pinned_i;
+                                        st2_dir_updt_wback_o  = 1'b1;
+                                        st2_dir_updt_dirty_o  = 1'b1;
+                                        st2_dir_updt_fetch_o  = 1'b0;
 
                                         st1_nop = 1'b1;
                                     end
@@ -1229,11 +1249,13 @@ import hpdcache_pkg::*;
                                     st2_flush_alloc_o = 1'b1;
 
                                     //  Update the state to WT in the directory
+                                    //  Pinned lines are never WT
                                     st2_dir_updt_o = 1'b1;
-                                    st2_dir_updt_valid_o = 1'b1;
-                                    st2_dir_updt_wback_o = 1'b0;
-                                    st2_dir_updt_dirty_o = 1'b0;
-                                    st2_dir_updt_fetch_o = 1'b0;
+                                    st2_dir_updt_valid_o  = 1'b1;
+                                    st2_dir_updt_pinned_o = 1'b0;
+                                    st2_dir_updt_wback_o  = 1'b0;
+                                    st2_dir_updt_dirty_o  = 1'b0;
+                                    st2_dir_updt_fetch_o  = 1'b0;
 
                                     //  Put the request in the replay table while waiting for the
                                     //  memory flushing

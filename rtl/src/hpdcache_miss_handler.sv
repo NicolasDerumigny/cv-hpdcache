@@ -99,6 +99,7 @@ import hpdcache_pkg::*;
     input  hpdcache_way_vector_t  mshr_alloc_victim_way_i,
     input  logic                  mshr_alloc_need_rsp_i,
     input  logic                  mshr_alloc_is_prefetch_i,
+    input  logic                  mshr_alloc_pinned_i,
     input  logic                  mshr_alloc_wback_i,
     input  logic                  mshr_alloc_dirty_i,
     input  hpdcache_req_data_t    mshr_alloc_wdata_i,
@@ -191,6 +192,7 @@ import hpdcache_pkg::*;
     hpdcache_word_t          refill_cnt_q, refill_cnt_d;
     logic                    refill_need_rsp_q;
     logic                    refill_is_prefetch_q;
+    logic                    refill_is_pinned_q;
     logic                    refill_wback_q;
     logic                    refill_dirty_q;
     hpdcache_req_data_t      refill_dirty_wdata_q;
@@ -236,6 +238,7 @@ import hpdcache_pkg::*;
     hpdcache_word_t          mshr_ack_word;
     logic                    mshr_ack_need_rsp;
     logic                    mshr_ack_is_prefetch;
+    logic                    mshr_ack_pinned;
     logic                    mshr_ack_wback;
     logic                    mshr_ack_dirty;
     cbuf_id_t                mshr_ack_cbuf_id;
@@ -567,6 +570,7 @@ import hpdcache_pkg::*;
     //  In case of error in the refill response, invalidate pre-allocated cache directory entry
     assign refill_dir_entry_o = '{
         valid   : ~refill_is_error_o,
+        pinned  : refill_is_pinned_q,
         wback   : ~refill_is_error_o & refill_wback_q,
         dirty   : ~refill_is_error_o & refill_dirty_q,
         fetch   : 1'b0,
@@ -742,6 +746,7 @@ import hpdcache_pkg::*;
             refill_tid_q <= '0;
             refill_need_rsp_q <= '0;
             refill_is_prefetch_q <= '0;
+            refill_is_pinned_q <= 0;
             refill_wback_q <= '0;
             refill_dirty_q <= '0;
             refill_dirty_wdata_q <= '0;
@@ -757,6 +762,7 @@ import hpdcache_pkg::*;
                 refill_tid_q <= mshr_ack_req_id;
                 refill_need_rsp_q <= mshr_ack_need_rsp;
                 refill_is_prefetch_q <= mshr_ack_is_prefetch;
+                refill_is_pinned_q <= mshr_ack_pinned;
                 refill_wback_q <= mshr_ack_wback;
                 refill_dirty_q <= mshr_ack_dirty;
                 refill_dirty_wdata_q <= mshr_ack_wdata;
@@ -806,6 +812,7 @@ import hpdcache_pkg::*;
         .alloc_victim_way_i       (mshr_alloc_victim_way),
         .alloc_need_rsp_i         (mshr_alloc_need_rsp_i),
         .alloc_is_prefetch_i      (mshr_alloc_is_prefetch_i),
+        .alloc_pinned_i           (mshr_alloc_pinned_i),
         .alloc_wback_i            (mshr_alloc_wback_i),
         .alloc_dirty_i            (mshr_alloc_dirty_i),
         .alloc_cbuf_id_i          (mshr_alloc_cbuf_id),
@@ -825,6 +832,7 @@ import hpdcache_pkg::*;
         .ack_need_rsp_o           (mshr_ack_need_rsp),
         .ack_is_prefetch_o        (mshr_ack_is_prefetch),
         .ack_wback_o              (mshr_ack_wback),
+        .ack_pinned_o             (mshr_ack_pinned),
         .ack_dirty_o              (mshr_ack_dirty),
         .ack_cbuf_id_o            (mshr_ack_cbuf_id)
     );
