@@ -50,6 +50,7 @@ import hpdcache_pkg::*;
     //      Victim selection interface
     input  logic                  sel_victim_i,
     input  way_vector_t           sel_dir_valid_i,
+    input  way_vector_t           sel_dir_pinned_i,
     input  way_vector_t           sel_dir_wback_i, /* unused */
     input  way_vector_t           sel_dir_dirty_i,
     input  way_vector_t           sel_dir_fetch_i,
@@ -68,10 +69,10 @@ import hpdcache_pkg::*;
 
     //  Victim way selection
     //  {{{
-    assign unused_ways = ~sel_dir_fetch_i & ~sel_dir_valid_i;
-    assign rand_ways   = ~sel_dir_fetch_i &  sel_dir_valid_i &  rand_victim_way;
-    assign clean_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i & ~sel_dir_dirty_i;
-    assign dirty_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i &  sel_dir_dirty_i;
+    assign unused_ways = ~sel_dir_fetch_i & ~sel_dir_valid_i & ~sel_dir_pinned_i;
+    assign rand_ways   = ~sel_dir_fetch_i &  sel_dir_valid_i &  rand_victim_way & ~sel_dir_pinned_i;
+    assign clean_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i & ~sel_dir_dirty_i & ~sel_dir_pinned_i;
+    assign dirty_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i &  sel_dir_dirty_i & ~sel_dir_pinned_i;
 
     hpdcache_lfsr #(.WIDTH(8))
         lfsr_i(

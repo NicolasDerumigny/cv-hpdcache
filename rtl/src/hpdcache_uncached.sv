@@ -51,6 +51,7 @@ import hpdcache_pkg::*;
     //  {{{
     input  logic                  req_valid_i,
     output logic                  req_ready_o,
+    input  logic                  req_pinned_i,
     input  hpdcache_uc_op_t       req_op_i,
     input  hpdcache_req_addr_t    req_addr_i,
     input  hpdcache_req_size_t    req_size_i,
@@ -605,7 +606,7 @@ import hpdcache_pkg::*;
     );
 
     assign data_amo_write_o = (uc_fsm_q == UC_AMO_WRITE_DATA);
-    assign data_amo_write_enable_o = req_hit;
+    assign data_amo_write_enable_o = req_hit && !req_pinned_i;
     assign data_amo_write_set_o = req_addr_q[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.setWidth];
     assign data_amo_write_size_o = req_size_q;
     assign data_amo_write_word_o = req_addr_q[HPDcacheCfg.wordByteIdxWidth +:

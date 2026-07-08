@@ -47,7 +47,7 @@ import hpdcache_pkg::*;
     // }}}
 
     // Ports
-    // {{
+    // {{{
 (
     input logic clk_i,
     input logic rst_ni,

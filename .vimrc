@@ -7,5 +7,4 @@ let g:ale_fixers =
             \}
 
 
-let g:ale_verilog_verilator_options = "--cc -Wall -Wno-pinconnectempty -Wno-fatal  --Wno-MODDUP -error-limit 100 --top hpdcache_lint -f " . $HPDCACHE_DIR . "/rtl/hpdcache.Flist " . $HPDCACHE_DIR . "/rtl/src/common/macros/behav/*.sv " . $HPDCACHE_DIR . "/rtl/lint/hpdcache_lint.sv"
-
+let g:ale_verilog_verilator_options = "--cc -Wall -Wno-pinconnectempty -Wno-fatal  --Wno-MODDUP -error-limit 100 --top hpdcache_lint -f " . $HPDCACHE_DIR . "/rtl/hpdcache.Flist " . $HPDCACHE_DIR . "/rtl/src/common/macros/behav/*.sv " . $HPDCACHE_DIR . "/rtl/lint/hpdcache_lint.sv " . $HPDCACHE_DIR . "/rtl/src/utils/ecc/prim_secded_pkg.sv " . $HPDCACHE_DIR . "/rtl/src/utils/ecc/prim_secded_*enc.sv " .  $HPDCACHE_DIR . "/rtl/src/utils/ecc/prim_secded_*dec.sv " .  "+incdir+" . $HPDCACHE_DIR . "/rtl/src/utils/ecc"

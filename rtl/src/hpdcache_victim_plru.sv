@@ -50,6 +50,7 @@ import hpdcache_pkg::*;
     //      Victim selection interface
     input  logic                  sel_victim_i, /* unused */
     input  way_vector_t           sel_dir_valid_i,
+    input  way_vector_t           sel_dir_pinned_i,
     input  way_vector_t           sel_dir_wback_i,
     input  way_vector_t           sel_dir_dirty_i,
     input  way_vector_t           sel_dir_fetch_i,
@@ -70,10 +71,10 @@ import hpdcache_pkg::*;
 
     //  Victim way selection
     //  {{{
-    assign unused_ways = ~sel_dir_fetch_i & ~sel_dir_valid_i;
-    assign plru_ways   = ~sel_dir_fetch_i &  sel_dir_valid_i & ~plru_q[sel_victim_set_i];
-    assign clean_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i & ~sel_dir_dirty_i;
-    assign dirty_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i &  sel_dir_dirty_i;
+    assign unused_ways = ~sel_dir_fetch_i & ~sel_dir_valid_i & ~sel_dir_pinned_i;
+    assign plru_ways   = ~sel_dir_fetch_i &  sel_dir_valid_i & ~plru_q[sel_victim_set_i] & ~sel_dir_pinned_i;
+    assign clean_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i & ~sel_dir_dirty_i & ~sel_dir_pinned_i;
+    assign dirty_ways  = ~sel_dir_fetch_i &  sel_dir_valid_i &  sel_dir_dirty_i & ~sel_dir_pinned_i;
 
     hpdcache_prio_1hot_encoder #(.N(HPDcacheCfg.u.ways))
         unused_victim_select_i(

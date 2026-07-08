@@ -143,6 +143,7 @@ import hpdcache_pkg::*;
     //  {{{
     typedef logic [HPDcacheCfg.u.paWidth-1:0] hpdcache_req_addr_t;
     typedef logic [HPDcacheCfg.setWidth-1:0] hpdcache_set_t;
+    typedef logic unsigned [HPDcacheCfg.u.sets-1:0] hpdcache_set_vector_t;
     typedef logic [HPDcacheCfg.clOffsetWidth-1:0] hpdcache_offset_t;
     typedef logic unsigned [HPDcacheCfg.clWordIdxWidth-1:0] hpdcache_word_t;
     typedef logic unsigned [HPDcacheCfg.u.ways-1:0] hpdcache_way_vector_t;
@@ -152,15 +153,18 @@ import hpdcache_pkg::*;
     //  {{{
     typedef struct packed {
         //  Cacheline state
-        //  Encoding: {valid, wb, dirty, fetch}
-        //            {0,X,X,0}: Invalid
-        //            {0,X,X,1}: Invalid and Fetching
-        //            {1,X,X,1}: Valid and Fetching (cacheline being replaced is accessible)
-        //            {1,0,0,0}: Write-through
-        //            {1,1,0,0}: Write-back (clean)
-        //            {1,1,1,0}: Write-back (dirty)
+        //  Encoding: {valid, pinned, wb, dirty, fetch}
+        //            {0,X,X,X,0}: Invalid
+        //            {0,X,X,X,1}: Invalid and Fetching
+        //            {1,X,X,X,1}: Valid and Fetching (cacheline being replaced is accessible)
+        //            {1,0,0,0,0}: Write-through
+        //            {1,0,1,0,0}: Write-back (clean)
+        //            {1,0,1,1,0}: Write-back (dirty)
+        //            {1,1,1,0,0}: Pinned (clean)
+        //            {1,1,1,1,0}: Pinned (dirty)
         //  {{{
         logic valid; //  valid cacheline
+        logic pinned; // pinned cacheline
         logic wback; //  cacheline in write-back mode
         logic dirty; //  cacheline is locally modified (memory is obsolete)
         logic fetch; //  cacheline is reserved for a new cacheline being fetched
@@ -224,6 +228,7 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t  miss_mshr_alloc_victim_way;
     logic                  miss_mshr_alloc_need_rsp;
     logic                  miss_mshr_alloc_is_prefetch;
+    logic                  miss_mshr_alloc_pinned;
     logic                  miss_mshr_alloc_wback;
     logic                  miss_mshr_alloc_dirty;
 
@@ -245,6 +250,7 @@ import hpdcache_pkg::*;
 
     logic                  uc_ready;
     logic                  uc_req_valid;
+    logic                  uc_req_pinned;
     hpdcache_uc_op_t       uc_req_op;
     hpdcache_req_addr_t    uc_req_addr;
     hpdcache_req_size_t    uc_req_size;
@@ -333,6 +339,8 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t  csr_dir_way;
     hpdcache_tag_t         csr_dir_tag;
     hpdcache_data_word_t   csr_dir_pinned;
+    hpdcache_req_addr_t    csr_pinned_addr_start;
+    hpdcache_req_addr_t    csr_pinned_addr_size;
 
     logic                  flush_empty;
     logic                  flush_busy;
@@ -363,8 +371,10 @@ import hpdcache_pkg::*;
     logic                  arb_req_valid;
     logic                  arb_req_ready;
     hpdcache_req_t         arb_req;
+    logic                  arb_req_early_pinned;
     logic                  arb_abort;
     hpdcache_tag_t         arb_tag;
+    logic                  arb_req_pinned;
     hpdcache_pma_t         arb_pma;
 
     logic                  mem_req_read_miss_ready;
@@ -427,18 +437,28 @@ import hpdcache_pkg::*;
         {HPDcacheCfg.u.memIdWidth{1'b1}};
     localparam logic [HPDcacheCfg.u.memIdWidth-1:0] HPDCACHE_UC_WRITE_ID =
         {HPDcacheCfg.u.memIdWidth{1'b1}};
+
+    logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned;
     //  }}}
 
     //  Requesters arbiter
     //  {{{
     hpdcache_core_arbiter #(
         .HPDcacheCfg                        (HPDcacheCfg),
+        .hpdcache_set_t                     (hpdcache_set_t),
         .hpdcache_tag_t                     (hpdcache_tag_t),
         .hpdcache_req_t                     (hpdcache_req_t),
+        .hpdcache_req_addr_t                (hpdcache_req_addr_t),
+        .hpdcache_req_offset_t              (hpdcache_req_offset_t),
         .hpdcache_rsp_t                     (hpdcache_rsp_t)
     ) core_req_arbiter_i (
         .clk_i,
         .rst_ni,
+
+        .sets_fully_pinned_i                (sets_fully_pinned),
+
+        .csr_pinned_addr_start_i            (csr_pinned_addr_start),
+        .csr_pinned_addr_size_i             (csr_pinned_addr_size),
 
         .core_req_valid_i,
         .core_req_ready_o,
@@ -455,8 +475,10 @@ import hpdcache_pkg::*;
         .arb_req_valid_o                    (arb_req_valid),
         .arb_req_ready_i                    (arb_req_ready),
         .arb_req_o                          (arb_req),
+        .arb_req_early_pinned_o             (arb_req_early_pinned),
         .arb_abort_o                        (arb_abort),
         .arb_tag_o                          (arb_tag),
+        .arb_req_pinned_o                   (arb_req_pinned),
         .arb_pma_o                          (arb_pma)
     );
     //  }}}
@@ -503,8 +525,10 @@ import hpdcache_pkg::*;
         .core_req_valid_i                   (arb_req_valid),
         .core_req_ready_o                   (arb_req_ready),
         .core_req_i                         (arb_req),
+        .core_req_early_pinned_i            (arb_req_early_pinned),
         .core_req_abort_i                   (arb_abort),
         .core_req_tag_i                     (arb_tag),
+        .core_req_pinned_i                  (arb_req_pinned),
         .core_req_pma_i                     (arb_pma),
 
         .core_rsp_valid_o                   (core_rsp_valid),
@@ -532,6 +556,7 @@ import hpdcache_pkg::*;
         .st2_mshr_alloc_victim_way_o        (miss_mshr_alloc_victim_way),
         .st2_mshr_alloc_need_rsp_o          (miss_mshr_alloc_need_rsp),
         .st2_mshr_alloc_is_prefetch_o       (miss_mshr_alloc_is_prefetch),
+        .st2_mshr_alloc_pinned_o            (miss_mshr_alloc_pinned),
         .st2_mshr_alloc_wback_o             (miss_mshr_alloc_wback),
         .st2_mshr_alloc_dirty_o             (miss_mshr_alloc_dirty),
 
@@ -594,6 +619,7 @@ import hpdcache_pkg::*;
         .uc_lrsc_snoop_addr_o               (uc_lrsc_snoop_addr),
         .uc_lrsc_snoop_size_o               (uc_lrsc_snoop_size),
         .uc_req_valid_o                     (uc_req_valid),
+        .uc_req_pinned_o                    (uc_req_pinned),
         .uc_req_op_o                        (uc_req_op),
         .uc_req_addr_o                      (uc_req_addr),
         .uc_req_size_o                      (uc_req_size),
@@ -690,6 +716,8 @@ import hpdcache_pkg::*;
         .cfg_scrub_enable_i,
         .cfg_scrub_period_i,
         .cfg_scrub_restart_i,
+
+        .sets_fully_pinned_o                (sets_fully_pinned),
 
         .evt_cache_write_miss_o,
         .evt_cache_read_miss_o,
@@ -833,6 +861,7 @@ import hpdcache_pkg::*;
         .mshr_alloc_victim_way_i            (miss_mshr_alloc_victim_way),
         .mshr_alloc_need_rsp_i              (miss_mshr_alloc_need_rsp),
         .mshr_alloc_is_prefetch_i           (miss_mshr_alloc_is_prefetch),
+        .mshr_alloc_pinned_i                (miss_mshr_alloc_pinned),
         .mshr_alloc_wback_i                 (miss_mshr_alloc_wback),
         .mshr_alloc_dirty_i                 (miss_mshr_alloc_dirty),
         .mshr_alloc_wdata_i                 (miss_mshr_alloc_wdata),
@@ -901,6 +930,7 @@ import hpdcache_pkg::*;
 
         .req_valid_i                   (uc_req_valid),
         .req_ready_o                   (uc_ready),
+        .req_pinned_i                  (uc_req_pinned),
         .req_op_i                      (uc_req_op),
         .req_addr_i                    (uc_req_addr),
         .req_size_i                    (uc_req_size),
@@ -1078,8 +1108,8 @@ import hpdcache_pkg::*;
         .dir_tag_i                     (csr_dir_tag),
         .dir_pinned_i                  (csr_dir_pinned),
 
-        .csr_pinned_addr_start_o       (/* TODO: open */),
-        .csr_pinned_addr_size_o        (/* TODO: open */)
+        .csr_pinned_addr_start_o       (csr_pinned_addr_start),
+        .csr_pinned_addr_size_o        (csr_pinned_addr_size)
     );
     //  }}}
 

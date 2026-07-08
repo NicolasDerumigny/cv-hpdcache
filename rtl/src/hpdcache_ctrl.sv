@@ -62,8 +62,10 @@ import hpdcache_pkg::*;
     input  logic                  core_req_valid_i,
     output logic                  core_req_ready_o,
     input  hpdcache_req_t         core_req_i,
+    input  logic                  core_req_early_pinned_i,
     input  logic                  core_req_abort_i,
     input  hpdcache_tag_t         core_req_tag_i,
+    input  logic                  core_req_pinned_i,
     input  hpdcache_pma_t         core_req_pma_i,
 
     //      Core response interface
@@ -95,6 +97,7 @@ import hpdcache_pkg::*;
     output hpdcache_way_vector_t  st2_mshr_alloc_victim_way_o,
     output logic                  st2_mshr_alloc_need_rsp_o,
     output logic                  st2_mshr_alloc_is_prefetch_o,
+    output logic                  st2_mshr_alloc_pinned_o,
     output logic                  st2_mshr_alloc_wback_o,
     output logic                  st2_mshr_alloc_dirty_o,
 
@@ -162,6 +165,7 @@ import hpdcache_pkg::*;
     output hpdcache_req_addr_t    uc_lrsc_snoop_addr_o,
     output hpdcache_req_size_t    uc_lrsc_snoop_size_o,
     output logic                  uc_req_valid_o,
+    output logic                  uc_req_pinned_o,
     output hpdcache_uc_op_t       uc_req_op_o,
     output hpdcache_req_addr_t    uc_req_addr_o,
     output hpdcache_req_size_t    uc_req_size_o,
@@ -234,7 +238,7 @@ import hpdcache_pkg::*;
     input  logic                  flush_empty_i,
 
     //  CSR Interface
-    input  logic                  csr_busy_i,
+    input   logic                 csr_busy_i,
     output  logic                 csr_req_valid_o,
     output  logic                 csr_req_is_load_o,
     output  logic                 csr_req_is_store_o,
@@ -261,6 +265,9 @@ import hpdcache_pkg::*;
     input  logic                  cfg_scrub_enable_i,
     input  logic unsigned [5:0]   cfg_scrub_period_i,
     input  logic                  cfg_scrub_restart_i,
+
+    //   Fully pinned set interface
+    output logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_o,
 
     //   Performance events
     output logic                  evt_cache_write_miss_o,
@@ -309,6 +316,7 @@ import hpdcache_pkg::*;
     typedef struct packed {
         hpdcache_req_x_t req;
         hpdcache_way_t   way_fetch;
+        logic            pinned;
     } rtab_entry_t;
 
     localparam hpdcache_uint CACHELINE_CHUNKS = (HPDcacheCfg.u.clWords/HPDcacheCfg.u.accessWords);
@@ -318,10 +326,12 @@ import hpdcache_pkg::*;
     //  {{{
     logic                    st1_req_valid_q, st1_req_valid_d;
     hpdcache_req_x_t         st1_req_q;
+    logic                    st1_req_pinned_q;
     rtab_ptr_t               st1_rtab_pop_try_ptr_q;
 
     logic                    st2_mshr_alloc_q, st2_mshr_alloc_d;
     logic                    st2_mshr_alloc_is_prefetch_q;
+    logic                    st2_mshr_alloc_pinned_q, st2_mshr_alloc_pinned_d;
     logic                    st2_mshr_alloc_wback_q, st2_mshr_alloc_wback_d;
     logic                    st2_mshr_alloc_dirty_q, st2_mshr_alloc_dirty_d;
     logic                    st2_mshr_alloc_need_rsp_q, st2_mshr_alloc_need_rsp_d;
@@ -341,6 +351,7 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t    st2_dir_updt_way_q;
     hpdcache_tag_t           st2_dir_updt_tag_q;
     logic                    st2_dir_updt_valid_q, st2_dir_updt_valid_d;
+    logic                    st2_dir_updt_pinned_q, st2_dir_updt_pinned_d;
     logic                    st2_dir_updt_wback_q, st2_dir_updt_wback_d;
     logic                    st2_dir_updt_dirty_q, st2_dir_updt_dirty_d;
     logic                    st2_dir_updt_fetch_q, st2_dir_updt_fetch_d;
@@ -362,6 +373,8 @@ import hpdcache_pkg::*;
     //  {{{
     // Pipeline Stage 0
     hpdcache_req_x_t         st0_req;
+    hpdcache_req_addr_t      st0_req_addr;
+    logic                    st0_req_pinned;
     logic                    st0_req_is_uncacheable;
     logic                    st0_req_is_load;
     logic                    st0_req_is_scrub;
@@ -390,6 +403,7 @@ import hpdcache_pkg::*;
     logic                    st1_req_cachedata_write_enable;
     logic                    st1_req_cachedata_write_merge;
     hpdcache_pma_t           st1_req_pma;
+    logic                    st1_req_pinned;
     hpdcache_tag_t           st1_req_tag;
     hpdcache_set_t           st1_req_set;
     hpdcache_word_t          st1_req_word;
@@ -418,10 +432,12 @@ import hpdcache_pkg::*;
     logic                    st1_req_is_cmo_fence;
     logic                    st1_req_is_cmo_prefetch;
     logic                    st1_req_is_partial;
+    logic                    st1_req_is_pinned;
     logic                    st1_req_wr_wt;
     logic                    st1_req_wr_wb;
     logic                    st1_req_wr_auto;
     logic                    st1_dir_hit;
+    logic                    st1_dir_hit_pinned;
     logic                    st1_dir_hit_wback;
     logic                    st1_dir_hit_dirty;
     logic                    st1_dir_hit_fetch;
@@ -430,6 +446,7 @@ import hpdcache_pkg::*;
     hpdcache_tag_t           st1_dir_hit_tag;
     logic                    st1_dir_victim_unavailable;
     logic                    st1_dir_victim_valid;
+    logic                    st1_dir_victim_pinned;
     logic                    st1_dir_victim_wback;
     logic                    st1_dir_victim_dirty;
     hpdcache_tag_t           st1_dir_victim_tag;
@@ -518,6 +535,12 @@ import hpdcache_pkg::*;
             if (!cfg_enable_i) begin
                 st0_req.req.pma.uncacheable = 1'b1;
             end
+
+            //  force uncacheable request if all ways are pinned
+            if (sets_fully_pinned_o[st0_req_set]) begin
+                st0_req.req.pma.uncacheable = 1'b1;
+            end
+
             //  if WT write-policy is not supported, force WB
             if (!HPDcacheCfg.u.wtEn) begin
                 st0_req.req.pma.wr_policy_hint = HPDCACHE_WR_POLICY_WB;
@@ -542,6 +565,8 @@ import hpdcache_pkg::*;
     assign st0_req_is_partial = (hpdcache_uint'(st0_req.req.size) < HPDcacheCfg.wordByteIdxWidth);
     assign st0_req_addr       = {st0_req.req.addr_tag, st0_req.req.addr_offset};
     assign st0_req_is_csr     = (st0_req_addr >> 20) == CFIG_BASE;
+    assign st0_req_pinned     = st0_rtab_pop_try_valid ? st0_rtab_pop_try_req.pinned
+                                                         : core_req_early_pinned_i;
     //  }}}
 
     //  Decode operation in stage 1
@@ -549,9 +574,14 @@ import hpdcache_pkg::*;
     always_comb
     begin : st1_req_pma_comb
         st1_req_pma = st1_req_q.req.phys_indexed ? st1_req_q.req.pma : core_req_pma_i;
+        st1_req_pinned = st1_req_q.req.phys_indexed ? st1_req_pinned_q : core_req_pinned_i;
 
         //  force uncacheable requests if the cache is disabled
         if (!cfg_enable_i) begin
+            st1_req_pma.uncacheable = 1'b1;
+          end
+        //  force uncacheable request if all ways are pinned
+        if (sets_fully_pinned_o[st1_req_set]) begin
             st1_req_pma.uncacheable = 1'b1;
         end
         //  if WT write-policy is not supported, force WB
@@ -564,7 +594,7 @@ import hpdcache_pkg::*;
         end
     end
 
-    //         In case of replay or physically-indexed cache, the tag and PMA come
+    //         In case of replay or physically-indexed cache, the tag, pinning and PMA come
     //         from stage 0. Otherwise, this information come directly from the
     //         requester in stage 1
     assign st1_req_tag = st1_req_q.req.phys_indexed ? st1_req_q.req.addr_tag : core_req_tag_i;
@@ -572,9 +602,11 @@ import hpdcache_pkg::*;
     always_comb
     begin : st1_req_comb
         st1_req = st1_req_q;
+        st1_req_is_pinned = st1_req_pinned_q;
         if (!st1_req_q.from_rtab) begin
             st1_req.req.addr_tag = st1_req_tag;
             st1_req.req.pma      = st1_req_pma;
+            st1_req_is_pinned    = st1_req_pinned;
         end
     end
 
@@ -606,9 +638,9 @@ import hpdcache_pkg::*;
     assign st1_req_is_partial = (hpdcache_uint'(st1_req.req.size) < HPDcacheCfg.wordByteIdxWidth);
 
     //  Decode write-policy hint
-    assign st1_req_wr_wt           = (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_WT);
-    assign st1_req_wr_wb           = (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_WB);
-    assign st1_req_wr_auto         = (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_AUTO);
+    assign st1_req_wr_wt           = st1_req_is_pinned ? 1'b0 : (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_WT);
+    assign st1_req_wr_wb           = st1_req_is_pinned ? 1'b1 : (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_WB);
+    assign st1_req_wr_auto         = st1_req_is_pinned ? 1'b0 : (st1_req.req.pma.wr_policy_hint == HPDCACHE_WR_POLICY_AUTO);
     //  }}}
 
     //  Cache controller protocol engine
@@ -657,14 +689,17 @@ import hpdcache_pkg::*;
         .st1_req_is_cmo_fence_i             (st1_req_is_cmo_fence),
         .st1_req_is_cmo_prefetch_i          (st1_req_is_cmo_prefetch),
         .st1_req_is_partial_i               (st1_req_is_partial),
+        .st1_req_is_pinned_i                (st1_req_is_pinned),
         .st1_req_wr_wt_i                    (st1_req_wr_wt),
         .st1_req_wr_wb_i                    (st1_req_wr_wb),
         .st1_req_wr_auto_i                  (st1_req_wr_auto),
+        .st1_dir_hit_pinned_i               (st1_dir_hit_pinned),
         .st1_dir_hit_wback_i                (st1_dir_hit_wback),
         .st1_dir_hit_dirty_i                (st1_dir_hit_dirty),
         .st1_dir_hit_fetch_i                (st1_dir_hit_fetch),
         .st1_dir_victim_unavailable_i       (st1_dir_victim_unavailable),
         .st1_dir_victim_valid_i             (st1_dir_victim_valid),
+        .st1_dir_victim_pinned_i            (st1_dir_victim_pinned),
         .st1_dir_victim_wback_i             (st1_dir_victim_wback),
         .st1_dir_victim_dirty_i             (st1_dir_victim_dirty),
         .st1_dir_err_cor_i                  (|st1_dir_err_cor),
@@ -688,21 +723,25 @@ import hpdcache_pkg::*;
 
         .st2_mshr_alloc_i                   (st2_mshr_alloc_q),
         .st2_mshr_alloc_is_prefetch_i       (st2_mshr_alloc_is_prefetch_q),
+        .st2_mshr_alloc_pinned_i            (st2_mshr_alloc_pinned_q),
         .st2_mshr_alloc_wback_i             (st2_mshr_alloc_wback_q),
         .st2_mshr_alloc_dirty_i             (st2_mshr_alloc_dirty_q),
         .st2_mshr_alloc_o                   (st2_mshr_alloc_d),
         .st2_mshr_alloc_cs_o                (st2_mshr_alloc_cs_o),
         .st2_mshr_alloc_need_rsp_o          (st2_mshr_alloc_need_rsp_d),
+        .st2_mshr_alloc_pinned_o            (st2_mshr_alloc_pinned_d),
         .st2_mshr_alloc_wback_o             (st2_mshr_alloc_wback_d),
         .st2_mshr_alloc_dirty_o             (st2_mshr_alloc_dirty_d),
 
         .st2_dir_updt_i                     (st2_dir_updt_q),
         .st2_dir_updt_valid_i               (st2_dir_updt_valid_q),
+        .st2_dir_updt_pinned_i              (st2_dir_updt_pinned_q),
         .st2_dir_updt_wback_i               (st2_dir_updt_wback_q),
         .st2_dir_updt_dirty_i               (st2_dir_updt_dirty_q),
         .st2_dir_updt_fetch_i               (st2_dir_updt_fetch_q),
         .st2_dir_updt_o                     (st2_dir_updt_d),
         .st2_dir_updt_valid_o               (st2_dir_updt_valid_d),
+        .st2_dir_updt_pinned_o              (st2_dir_updt_pinned_d),
         .st2_dir_updt_wback_o               (st2_dir_updt_wback_d),
         .st2_dir_updt_dirty_o               (st2_dir_updt_dirty_d),
         .st2_dir_updt_fetch_o               (st2_dir_updt_fetch_d),
@@ -829,6 +868,7 @@ import hpdcache_pkg::*;
 
     assign st1_alloc_rtab = '{
         req       : st1_req,
+        pinned    : st1_req_is_pinned,
         way_fetch : st1_dir_hit_way_index
     };
 
@@ -901,6 +941,7 @@ import hpdcache_pkg::*;
         end else begin
             if (core_req_ready_o | st0_rtab_pop_try_ready) begin
                 st1_req_q <= st0_req;
+                st1_req_pinned_q <= st0_req_pinned;
             end
         end
     end
@@ -931,6 +972,7 @@ import hpdcache_pkg::*;
             st2_mshr_alloc_wdata_q       <= '0;
             st2_mshr_alloc_be_q          <= '0;
             st2_mshr_alloc_is_prefetch_q <= '0;
+            st2_mshr_alloc_pinned_q <= '0;
             st2_mshr_alloc_wback_q       <= '0;
             st2_mshr_alloc_dirty_q       <= '0;
             st2_mshr_alloc_victim_way_q  <= '0;
@@ -940,6 +982,7 @@ import hpdcache_pkg::*;
             st2_dir_updt_set_q    <= '0;
             st2_dir_updt_way_q    <= '0;
             st2_dir_updt_valid_q  <= '0;
+            st2_dir_updt_pinned_q  <= '0;
             st2_dir_updt_wback_q  <= '0;
             st2_dir_updt_dirty_q  <= '0;
             st2_dir_updt_fetch_q  <= '0;
@@ -952,6 +995,7 @@ import hpdcache_pkg::*;
                 st2_mshr_alloc_wdata_q       <= st1_req.req.wdata;
                 st2_mshr_alloc_be_q          <= st1_req.req.be;
                 st2_mshr_alloc_is_prefetch_q <= st1_req_is_cmo_prefetch;
+                st2_mshr_alloc_pinned_q      <= st2_mshr_alloc_pinned_d;
                 st2_mshr_alloc_wback_q       <= st2_mshr_alloc_wback_d;
                 st2_mshr_alloc_dirty_q       <= st2_mshr_alloc_dirty_d;
                 st2_mshr_alloc_victim_way_q  <= st1_dir_victim_way;
@@ -962,12 +1006,12 @@ import hpdcache_pkg::*;
                 st2_flush_alloc_way_q   <= st1_dir_hit ? st1_dir_hit_way : st1_dir_victim_way;
             end
 
-
             if (st2_dir_updt_d) begin
                 st2_dir_updt_tag_q    <= st1_dir_hit ? st1_dir_hit_tag : st1_dir_victim_tag;
                 st2_dir_updt_set_q    <= st1_req_set;
                 st2_dir_updt_way_q    <= st1_dir_hit ? st1_dir_hit_way : st1_dir_victim_way;
                 st2_dir_updt_valid_q  <= st2_dir_updt_valid_d;
+                st2_dir_updt_pinned_q <= st2_dir_updt_pinned_d;
                 st2_dir_updt_wback_q  <= st2_dir_updt_wback_d;
                 st2_dir_updt_dirty_q  <= st2_dir_updt_dirty_d;
                 st2_dir_updt_fetch_q  <= st2_dir_updt_fetch_d;
@@ -1055,6 +1099,7 @@ import hpdcache_pkg::*;
         .dir_updt_sel_victim_i         (st1_req_updt_sel_victim),
         .dir_hit_way_o                 (st1_dir_hit_way),
         .dir_hit_tag_o                 (st1_dir_hit_tag),
+        .dir_hit_pinned_o              (st1_dir_hit_pinned),
         .dir_hit_wback_o               (st1_dir_hit_wback),
         .dir_hit_dirty_o               (st1_dir_hit_dirty),
         .dir_hit_fetch_o               (st1_dir_hit_fetch),
@@ -1064,6 +1109,7 @@ import hpdcache_pkg::*;
         .dir_updt_way_i                (st2_dir_updt_way_q),
         .dir_updt_tag_i                (st2_dir_updt_tag_q),
         .dir_updt_valid_i              (st2_dir_updt_valid_q),
+        .dir_updt_pinned_i             (st2_dir_updt_pinned_q),
         .dir_updt_wback_i              (st2_dir_updt_wback_q),
         .dir_updt_dirty_i              (st2_dir_updt_dirty_q),
         .dir_updt_fetch_i              (st2_dir_updt_fetch_q),
@@ -1071,12 +1117,6 @@ import hpdcache_pkg::*;
         .dir_csr_read_tag_i            (csr_dir_read_tag_i),
         .dir_csr_way_i                 (csr_dir_way_i),
         .dir_csr_pinned_o              (csr_dir_pinned_o),
-
-        .dir_amo_match_i               (uc_dir_amo_match_i),
-        .dir_amo_match_set_i           (uc_dir_amo_match_set_i),
-        .dir_amo_match_tag_i           (uc_dir_amo_match_tag_i),
-        .dir_amo_updt_sel_victim_i     (uc_dir_amo_updt_sel_victim_i),
-        .dir_amo_hit_way_o             (uc_dir_amo_hit_way_o),
 
         .dir_refill_i                  (refill_write_dir_i),
         .dir_refill_set_i              (refill_set_i),
@@ -1087,6 +1127,7 @@ import hpdcache_pkg::*;
         .dir_victim_sel_i              (st1_victim_sel),
         .dir_victim_set_i              (st1_req_set),
         .dir_victim_valid_o            (st1_dir_victim_valid),
+        .dir_victim_pinned_o           (st1_dir_victim_pinned),
         .dir_victim_wback_o            (st1_dir_victim_wback),
         .dir_victim_dirty_o            (st1_dir_victim_dirty),
         .dir_victim_tag_o              (st1_dir_victim_tag),
@@ -1179,7 +1220,9 @@ import hpdcache_pkg::*;
         .data_err_read_i               (err_dat_read),
         .data_err_rdata_o              (err_dat_rdata_d),
         .data_err_write_i              (err_dat_write),
-        .data_err_wdata_i              (err_dat_wdata)
+        .data_err_wdata_i              (err_dat_wdata),
+
+        .sets_fully_pinned_o           (sets_fully_pinned_o)
     );
 
     assign st1_dir_hit           = |st1_dir_hit_way;
@@ -1216,6 +1259,7 @@ import hpdcache_pkg::*;
     assign st2_mshr_alloc_victim_way_o  = st2_mshr_alloc_victim_way_q;
     assign st2_mshr_alloc_need_rsp_o    = st2_mshr_alloc_need_rsp_q;
     assign st2_mshr_alloc_is_prefetch_o = st2_mshr_alloc_is_prefetch_q;
+    assign st2_mshr_alloc_pinned_o      = st2_mshr_alloc_pinned_q;
     assign st2_mshr_alloc_wback_o       = st2_mshr_alloc_wback_q;
     assign st2_mshr_alloc_dirty_o       = st2_mshr_alloc_dirty_q;
     //  }}}
@@ -1225,6 +1269,7 @@ import hpdcache_pkg::*;
     assign uc_lrsc_snoop_o           = st1_req_valid_q & st1_req_is_store;
     assign uc_lrsc_snoop_addr_o      = st1_req_addr;
     assign uc_lrsc_snoop_size_o      = st1_req.req.size;
+    assign uc_req_pinned_o           = st1_req_is_pinned;
     assign uc_req_addr_o             = st1_req_addr;
     assign uc_req_size_o             = st1_req.req.size;
     assign uc_req_data_o             = st1_req.req.wdata;
@@ -1255,9 +1300,9 @@ import hpdcache_pkg::*;
     assign csr_req_is_load_o    = st1_req_is_load,
            csr_req_is_store_o   = st1_req_is_store,
            csr_req_addr_o       = st1_req_addr - (CFIG_BASE << 20),
-           csr_req_tid_o        = st1_req.tid,
-           csr_req_sid_o        = st1_req.sid,
-           csr_req_wdata_o      = st1_req.wdata;
+           csr_req_tid_o        = st1_req.req.tid,
+           csr_req_sid_o        = st1_req.req.sid,
+           csr_req_wdata_o      = st1_req.req.wdata;
     //  }}}
 
     //  CMO request handler outputs

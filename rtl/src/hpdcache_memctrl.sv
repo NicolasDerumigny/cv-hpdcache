@@ -59,6 +59,7 @@ import hpdcache_pkg::*;
     input  logic                                dir_updt_sel_victim_i,
     output hpdcache_way_vector_t                dir_hit_way_o,
     output hpdcache_tag_t                       dir_hit_tag_o,
+    output logic                                dir_hit_pinned_o,
     output logic                                dir_hit_wback_o,
     output logic                                dir_hit_dirty_o,
     output logic                                dir_hit_fetch_o,
@@ -68,6 +69,7 @@ import hpdcache_pkg::*;
     input  hpdcache_way_vector_t                dir_updt_way_i,
     input  hpdcache_tag_t                       dir_updt_tag_i,
     input  logic                                dir_updt_valid_i,
+    input  logic                                dir_updt_pinned_i,
     input  logic                                dir_updt_wback_i,
     input  logic                                dir_updt_dirty_i,
     input  logic                                dir_updt_fetch_i,
@@ -75,12 +77,6 @@ import hpdcache_pkg::*;
     input  logic                                dir_csr_read_tag_i,
     input  hpdcache_way_vector_t                dir_csr_way_i,
     output hpdcache_data_word_t                 dir_csr_pinned_o,
-
-    input  logic                                dir_amo_match_i,
-    input  hpdcache_set_t                       dir_amo_match_set_i,
-    input  hpdcache_tag_t                       dir_amo_match_tag_i,
-    input  logic                                dir_amo_updt_sel_victim_i,
-    output hpdcache_way_vector_t                dir_amo_hit_way_o,
 
     input  logic                                dir_refill_i,
     input  hpdcache_set_t                       dir_refill_set_i,
@@ -91,6 +87,7 @@ import hpdcache_pkg::*;
     input  logic                                dir_victim_sel_i,
     input  hpdcache_set_t                       dir_victim_set_i,
     output logic                                dir_victim_valid_o,
+    output logic                                dir_victim_pinned_o,
     output logic                                dir_victim_wback_o,
     output logic                                dir_victim_dirty_o,
     output hpdcache_tag_t                       dir_victim_tag_o,
@@ -191,7 +188,12 @@ import hpdcache_pkg::*;
     input  logic                                data_err_read_i,
     output hpdcache_access_data_t               data_err_rdata_o,
     input  logic                                data_err_write_i,
-    input  hpdcache_access_data_t               data_err_wdata_i
+    input  hpdcache_access_data_t               data_err_wdata_i,
+    //      }}}
+
+    //      Fully pinned set interface
+    //      {{{
+    output logic [HPDcacheCfg.u.sets-1:0]       sets_fully_pinned_o
     //      }}}
 );
     //  }}}
@@ -317,14 +319,25 @@ import hpdcache_pkg::*;
     hpdcache_set_t                                dir_req_set_q;
     hpdcache_way_vector_t                         dir_req_way_q;
     hpdcache_dir_addr_t                           dir_addr;
+    hpdcache_dir_addr_t                           dir_addr_q;
     hpdcache_way_vector_t                         dir_cs;
+    hpdcache_way_vector_t                         dir_cs_q;
     hpdcache_way_vector_t                         dir_we;
+    hpdcache_way_vector_t                         dir_we_q;
     hpdcache_dir_entry_t [HPDcacheCfg.u.ways-1:0] dir_wentry;
     hpdcache_dir_entry_t [HPDcacheCfg.u.ways-1:0] dir_rentry;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_valid_q;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_pinned_q;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_fetching_q;
     logic                [HPDcacheCfg.u.ways-1:0] dir_valid;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_pinned;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_pinned_after_write;
     logic                [HPDcacheCfg.u.ways-1:0] dir_wback;
     logic                [HPDcacheCfg.u.ways-1:0] dir_dirty;
     logic                [HPDcacheCfg.u.ways-1:0] dir_fetch;
+    logic                                         dir_updt_q;
+
+    logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_q, sets_fully_pinned_d;
 
     hpdcache_data_addr_t                       data_addr;
     hpdcache_data_enable_t                     data_cs;
@@ -522,7 +535,7 @@ import hpdcache_pkg::*;
             //  Cache directory update
             dir_refill_i: begin
                 dir_addr    = dir_refill_set_i;
-                dir_cs      = dir_refill_way_i;
+                dir_cs      = '1; // Forced for pinning set update
                 dir_we      = dir_refill_way_i;
                 dir_wentry  = {HPDcacheCfg.u.ways{dir_refill_entry_i}};
             end
@@ -538,7 +551,7 @@ import hpdcache_pkg::*;
             //  Cache directory invalidate from the NoC
             dir_inval_write_i: begin
                 dir_addr    = dir_inval_set;
-                dir_cs      = dir_inval_hit_way;
+                dir_cs      = '1; // Forced for pinning set update
                 dir_we      = dir_inval_hit_way;
                 dir_wentry  = '0;
             end
@@ -562,12 +575,13 @@ import hpdcache_pkg::*;
             //  Cache directory CMO inval tag
             dir_cmo_updt_i: begin
                 dir_addr    = dir_cmo_updt_set_i;
-                dir_cs      = dir_cmo_updt_way_i;
+                dir_cs      = '1; // Forced for pinning set update
                 dir_we      = dir_cmo_updt_way_i;
 
                 for (hpdcache_uint i = 0; i < HPDcacheCfg.u.ways; i++) begin
                     dir_wentry[i] = '{
                         valid: dir_cmo_updt_valid_i,
+                        pinned: 1'b0,
                         wback: dir_cmo_updt_wback_i,
                         dirty: dir_cmo_updt_dirty_i,
                         fetch: dir_cmo_updt_fetch_i,
@@ -579,12 +593,13 @@ import hpdcache_pkg::*;
             //  Cache directory match tag -> hit
             dir_updt_i: begin
                 dir_addr    = dir_updt_set_i;
-                dir_cs      = dir_updt_way_i;
+                dir_cs      = '1; // Forced for pinning set update
                 dir_we      = dir_updt_way_i;
 
                 for (hpdcache_uint i = 0; i < HPDcacheCfg.u.ways; i++) begin
                     dir_wentry[i] = '{
                         valid: dir_updt_valid_i,
+                        pinned: dir_updt_pinned_i,
                         wback: dir_updt_wback_i,
                         dirty: dir_updt_dirty_i,
                         fetch: dir_updt_fetch_i,
@@ -674,7 +689,7 @@ import hpdcache_pkg::*;
     assign dir_csr_pinned_o[HPDcacheCfg.u.wordWidth-1 : HPDcacheCfg.u.ways] = '0;
     for (gen_i = 0; gen_i < int'(HPDcacheCfg.u.ways); gen_i++)
     begin : gen_dir_csr_pinned
-        assign dir_csr_pinned_o[gen_i] = dir_valid[gen_i];
+        assign dir_csr_pinned_o[gen_i] = dir_valid[gen_i] & dir_pinned[gen_i];
     end
 
     hpdcache_mux #(
@@ -687,6 +702,7 @@ import hpdcache_pkg::*;
         .data_o      (dir_hit_tag_o)
     );
 
+    assign dir_hit_pinned_o = |(dir_hit_way_o & dir_pinned);
     assign dir_hit_wback_o = |(dir_hit_way_o & dir_wback);
     assign dir_hit_dirty_o = |(dir_hit_way_o & dir_dirty);
     assign dir_hit_fetch_o = |(dir_hit_way_o & dir_fetch);
@@ -707,6 +723,7 @@ import hpdcache_pkg::*;
     );
 
     assign dir_victim_valid_o = |(dir_victim_way_o & dir_valid);
+    assign dir_victim_pinned_o = |(dir_victim_way_o & dir_pinned);
     assign dir_victim_wback_o = |(dir_victim_way_o & dir_wback);
     assign dir_victim_dirty_o = |(dir_victim_way_o & dir_dirty);
     hpdcache_mux #(
@@ -739,11 +756,11 @@ import hpdcache_pkg::*;
 
     for (gen_i = 0; gen_i < HPDcacheCfg.u.ways; gen_i++) begin : gen_dir_valid_bv
         assign dir_valid[gen_i] = dir_rentry[gen_i].valid;
+        assign dir_pinned[gen_i] = dir_rentry[gen_i].pinned;
         assign dir_wback[gen_i] = dir_rentry[gen_i].wback;
         assign dir_dirty[gen_i] = dir_rentry[gen_i].dirty;
         assign dir_fetch[gen_i] = dir_rentry[gen_i].fetch;
     end
-
 
     hpdcache_victim_sel #(
         .HPDcacheCfg              (HPDcacheCfg),
@@ -759,12 +776,35 @@ import hpdcache_pkg::*;
 
         .sel_victim_i             (dir_victim_sel_i),
         .sel_dir_valid_i          (dir_valid),
+        .sel_dir_pinned_i         (dir_pinned),
         .sel_dir_wback_i          (dir_wback),
         .sel_dir_dirty_i          (dir_dirty),
         .sel_dir_fetch_i          (dir_fetch),
         .sel_victim_set_i         (dir_victim_set_i),
         .sel_victim_way_o         (dir_victim_way_o)
     );
+    //  }}}
+
+    //  Pinned state update
+    //  {{{
+    //  Fetching lanes are not candidates for pinning (unknown state)
+    for (gen_i = 0; gen_i < HPDcacheCfg.u.ways; gen_i++) begin : gen_dir_pinned_write
+        assign dir_pinned_after_write[gen_i] = dir_we_q[gen_i]
+                                           ? ((dir_wentry_valid_q[gen_i] && dir_wentry_pinned_q[gen_i]) ||
+                                              dir_wentry_fetching_q[gen_i])
+                                           : ((dir_valid[gen_i] && dir_pinned[gen_i]) || dir_fetch[gen_i]);
+    end
+
+    always_comb begin
+        sets_fully_pinned_d = sets_fully_pinned_q;
+        // Update set pinned state only when all ways are queried, which is forced
+        // on writes / invalidation / updates
+        if (&dir_cs_q) begin
+            sets_fully_pinned_d[dir_addr_q] = &dir_pinned_after_write;
+        end
+    end
+
+    assign sets_fully_pinned_o = sets_fully_pinned_q;
     //  }}}
 
     //  Data RAM request multiplexor
@@ -1063,7 +1103,33 @@ import hpdcache_pkg::*;
             end
         end
     end
-    //  }}}
+
+    // Pinned state logic
+    // {{{
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (~rst_ni) begin
+            sets_fully_pinned_q    <= '0;
+            dir_we_q               <= '0;
+            dir_cs_q               <= '0;
+            dir_wentry_valid_q     <= '0;
+            dir_wentry_pinned_q    <= '0;
+            dir_wentry_fetching_q  <= '0;
+            dir_addr_q             <= '0;
+            dir_updt_q             <= '0;
+        end else begin
+            sets_fully_pinned_q <= sets_fully_pinned_d;
+            dir_we_q            <= dir_we;
+            dir_cs_q            <= dir_cs;
+            dir_addr_q          <= dir_addr;
+            for (int i = 0; i < HPDcacheCfg.u.ways; i++) begin
+                dir_wentry_valid_q[i]     <= dir_wentry[i].valid;
+                dir_wentry_pinned_q[i]    <= dir_wentry[i].pinned;
+                dir_wentry_fetching_q[i]  <= dir_wentry[i].fetch;
+                dir_updt_q                <= dir_updt_i;
+            end
+        end
+    end;
+    // }}}
 
     //  Select flush data (or data for the error correction handler)
     //  {{{
