@@ -356,8 +356,6 @@ import hpdcache_pkg::*;
                                 if (lrsc_uc_hit[req_sid_i]) begin
                                     if (no_pend_trans) begin
                                         uc_fsm_d = UC_MEM_REQ;
-                                    end else begin
-                                        uc_fsm_d = UC_WAIT_PENDING;
                                     end
                                 end
                                 //  SC with no valid reservation, thus respond with the failure code
