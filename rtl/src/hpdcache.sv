@@ -339,8 +339,8 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t  csr_dir_way;
     hpdcache_tag_t         csr_dir_tag;
     hpdcache_data_word_t   csr_dir_pinned;
-    hpdcache_req_addr_t    csr_pinned_addr_start;
-    hpdcache_req_addr_t    csr_pinned_addr_size;
+    hpdcache_nline_t       csr_pinned_line_addr_start;
+    hpdcache_nline_t       csr_pinned_line_addr_end;
 
     logic                  flush_empty;
     logic                  flush_busy;
@@ -449,6 +449,7 @@ import hpdcache_pkg::*;
         .hpdcache_tag_t                     (hpdcache_tag_t),
         .hpdcache_req_t                     (hpdcache_req_t),
         .hpdcache_req_addr_t                (hpdcache_req_addr_t),
+        .hpdcache_nline_t                   (hpdcache_nline_t),
         .hpdcache_req_offset_t              (hpdcache_req_offset_t),
         .hpdcache_rsp_t                     (hpdcache_rsp_t)
     ) core_req_arbiter_i (
@@ -457,8 +458,8 @@ import hpdcache_pkg::*;
 
         .sets_fully_pinned_i                (sets_fully_pinned),
 
-        .csr_pinned_addr_start_i            (csr_pinned_addr_start),
-        .csr_pinned_addr_size_i             (csr_pinned_addr_size),
+        .csr_pinned_line_addr_start_i           (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_i             (csr_pinned_line_addr_end),
 
         .core_req_valid_i,
         .core_req_ready_o,
@@ -1085,7 +1086,8 @@ import hpdcache_pkg::*;
         .hpdcache_data_word_t          (hpdcache_data_word_t),
         .hpdcache_way_vector_t         (hpdcache_way_vector_t),
         .hpdcache_set_t                (hpdcache_set_t),
-        .hpdcache_tag_t                (hpdcache_tag_t)
+        .hpdcache_tag_t                (hpdcache_tag_t),
+        .hpdcache_nline_t              (hpdcache_nline_t)
     ) hpdcache_csr_i (
         .clk_i,
         .rst_ni,
@@ -1108,8 +1110,8 @@ import hpdcache_pkg::*;
         .dir_tag_i                     (csr_dir_tag),
         .dir_pinned_i                  (csr_dir_pinned),
 
-        .csr_pinned_addr_start_o       (csr_pinned_addr_start),
-        .csr_pinned_addr_size_o        (csr_pinned_addr_size)
+        .csr_pinned_line_addr_start_o      (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_o        (csr_pinned_line_addr_end)
     );
     //  }}}
 

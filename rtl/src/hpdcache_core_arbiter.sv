@@ -35,6 +35,7 @@ import hpdcache_pkg::*;
     parameter type hpdcache_tag_t = logic,
     parameter type hpdcache_req_t = logic,
     parameter type hpdcache_req_addr_t = logic,
+    parameter type hpdcache_nline_t = logic,
     parameter type hpdcache_req_offset_t = logic,
     parameter type hpdcache_rsp_t = logic
 )
@@ -50,9 +51,11 @@ import hpdcache_pkg::*;
     //      Pinned set state
     input  logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_i,
 
-    //      Pinned region
-    input  hpdcache_req_addr_t            csr_pinned_addr_start_i,
-    input  hpdcache_req_addr_t            csr_pinned_addr_size_i,
+    //      Pinned region (cacheline granularity)
+    //         Line address of the first pinned cacheline (inclusive) / after
+    //         the last one (exclusive)
+    input  hpdcache_nline_t               csr_pinned_line_addr_start_i,
+    input  hpdcache_nline_t               csr_pinned_line_addr_end_i,
 
     //      Core request interface
     //         1st cycle
@@ -94,12 +97,21 @@ import hpdcache_pkg::*;
     logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_pinned;
     hpdcache_set_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_early_set;
     hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_early_addr;
-    hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_addr;
+    hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] core_req_early_line_addr;
+    hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] core_req_line_addr;
     logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned_conflict;
 
     logic [HPDcacheCfg.u.nRequesters-1:0] arb_req_gnt_q, arb_req_gnt_d;
     hpdcache_req_offset_t                 arb_req_addr_offset_q;
     //  }}}
+
+    //  A cacheline is pinned if its line address (byte address without the
+    //  cacheline offset bits) is in the configured region
+    //  [csr_pinned_line_addr_start_i, csr_pinned_line_addr_end_i)
+    function automatic logic hpdcache_line_addr_is_pinned(hpdcache_nline_t line_addr);
+        return (line_addr >= csr_pinned_line_addr_start_i) &&
+               (line_addr < csr_pinned_line_addr_end_i);
+    endfunction
 
     //  Requesters arbiter
     //  {{{
@@ -109,17 +121,16 @@ import hpdcache_pkg::*;
     generate
         for (gen_i = 0; gen_i < int'(HPDcacheCfg.u.nRequesters); gen_i++) begin : gen_core_req
             assign core_req_early_addr[gen_i]     = {core_req_i[gen_i].addr_tag, core_req_i[gen_i].addr_offset};
-            assign core_req_early_pinned[gen_i]   = (core_req_early_addr[gen_i] >= csr_pinned_addr_start_i) &&
-                                                   ((core_req_early_addr[gen_i] - csr_pinned_addr_size_i) < csr_pinned_addr_start_i);
+            assign core_req_early_line_addr[gen_i] = core_req_early_addr[gen_i][HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
+            assign core_req_early_pinned[gen_i]   = hpdcache_line_addr_is_pinned(core_req_early_line_addr[gen_i]);
             assign core_req_early_set[gen_i]      = core_req_i[gen_i].addr_offset[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.setWidth];
             // No conflicts on cycle 1, as all store req are physically indexed in the CVA6
             assign core_req_early_pinned_conflict[gen_i] = core_req_i[gen_i].phys_indexed && sets_fully_pinned_i[core_req_early_set[gen_i]]
                                                            && core_req_early_pinned[gen_i]
                                                            && !(is_cmo_inval(core_req_i[gen_i].op) || is_cmo_flush(core_req_i[gen_i].op));
 
-            assign core_req_addr[gen_i]            = {core_req_tag[gen_i], arb_req_addr_offset_q};
-            assign core_req_pinned[gen_i]          = (core_req_addr[gen_i] >= csr_pinned_addr_start_i) &&
-                                                   ((core_req_addr[gen_i] - csr_pinned_addr_size_i) < csr_pinned_addr_start_i);
+            assign core_req_line_addr[gen_i]       = {core_req_tag[gen_i], arb_req_addr_offset_q}[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
+            assign core_req_pinned[gen_i]          = hpdcache_line_addr_is_pinned(core_req_line_addr[gen_i]);
 
             assign core_req_ready_o[gen_i] = arb_req_gnt_d[gen_i] & arb_req_ready_i,
                    core_req_valid[gen_i]   = core_req_valid_i[gen_i],
