@@ -94,7 +94,6 @@ import hpdcache_pkg::*;
     output hpdcache_way_vector_t  st2_mshr_alloc_victim_way_o,
     output logic                  st2_mshr_alloc_need_rsp_o,
     output logic                  st2_mshr_alloc_is_prefetch_o,
-    output logic                  st2_mshr_alloc_pinned_o,
     output logic                  st2_mshr_alloc_wback_o,
     output logic                  st2_mshr_alloc_dirty_o,
 
@@ -318,7 +317,6 @@ import hpdcache_pkg::*;
 
     logic                    st2_mshr_alloc_q, st2_mshr_alloc_d;
     logic                    st2_mshr_alloc_is_prefetch_q;
-    logic                    st2_mshr_alloc_pinned_q, st2_mshr_alloc_pinned_d;
     logic                    st2_mshr_alloc_wback_q, st2_mshr_alloc_wback_d;
     logic                    st2_mshr_alloc_dirty_q, st2_mshr_alloc_dirty_d;
     logic                    st2_mshr_alloc_need_rsp_q, st2_mshr_alloc_need_rsp_d;
@@ -391,7 +389,6 @@ import hpdcache_pkg::*;
     logic                    st1_req_cachedata_write_enable;
     logic                    st1_req_cachedata_write_merge;
     hpdcache_pma_t           st1_req_pma;
-    logic                    st1_req_pinned;
     hpdcache_tag_t           st1_req_tag;
     hpdcache_set_t           st1_req_set;
     hpdcache_word_t          st1_req_word;
@@ -570,7 +567,6 @@ import hpdcache_pkg::*;
     always_comb
     begin : st1_req_pma_comb
         st1_req_pma = st1_req_q.req.phys_indexed ? st1_req_q.req.pma : core_req_pma_i;
-        st1_req_pinned = st1_req_q.req.phys_indexed ? st1_req_pinned_q : core_req_pinned_i;
 
         //  force uncacheable requests if the cache is disabled
         if (!cfg_enable_i) begin
@@ -590,7 +586,7 @@ import hpdcache_pkg::*;
         end
     end
 
-    //         In case of replay or physically-indexed cache, the tag, pinning and PMA come
+    //         In case of replay or physically-indexed cache, the tag and PMA come
     //         from stage 0. Otherwise, this information come directly from the
     //         requester in stage 1
     assign st1_req_tag = st1_req_q.req.phys_indexed ? st1_req_q.req.addr_tag : core_req_tag_i;
@@ -598,12 +594,16 @@ import hpdcache_pkg::*;
     always_comb
     begin : st1_req_comb
         st1_req = st1_req_q;
-        st1_req_is_pinned = st1_req_pinned_q;
         if (!st1_req_q.from_rtab) begin
             st1_req.req.addr_tag = st1_req_tag;
             st1_req.req.pma      = st1_req_pma;
-            st1_req_is_pinned    = st1_req_pinned;
         end
+
+        //  In case of replay or physically-indexed cache, the pinning state comes
+        //  from stage 0 (captured in the st1_req_pinned_q register). Otherwise,
+        //  it comes directly from the requester in stage 1. Note that requests
+        //  replayed from the RTAB are always physically indexed.
+        st1_req_is_pinned = st1_req_q.req.phys_indexed ? st1_req_pinned_q : core_req_pinned_i;
     end
 
     //         A requester can ask to abort a request it initiated on the
@@ -733,13 +733,11 @@ import hpdcache_pkg::*;
 
         .st2_mshr_alloc_i                   (st2_mshr_alloc_q),
         .st2_mshr_alloc_is_prefetch_i       (st2_mshr_alloc_is_prefetch_q),
-        .st2_mshr_alloc_pinned_i            (st2_mshr_alloc_pinned_q),
         .st2_mshr_alloc_wback_i             (st2_mshr_alloc_wback_q),
         .st2_mshr_alloc_dirty_i             (st2_mshr_alloc_dirty_q),
         .st2_mshr_alloc_o                   (st2_mshr_alloc_d),
         .st2_mshr_alloc_cs_o                (st2_mshr_alloc_cs_o),
         .st2_mshr_alloc_need_rsp_o          (st2_mshr_alloc_need_rsp_d),
-        .st2_mshr_alloc_pinned_o            (st2_mshr_alloc_pinned_d),
         .st2_mshr_alloc_wback_o             (st2_mshr_alloc_wback_d),
         .st2_mshr_alloc_dirty_o             (st2_mshr_alloc_dirty_d),
 
@@ -981,7 +979,6 @@ import hpdcache_pkg::*;
             st2_mshr_alloc_wdata_q       <= '0;
             st2_mshr_alloc_be_q          <= '0;
             st2_mshr_alloc_is_prefetch_q <= '0;
-            st2_mshr_alloc_pinned_q <= '0;
             st2_mshr_alloc_wback_q       <= '0;
             st2_mshr_alloc_dirty_q       <= '0;
             st2_mshr_alloc_victim_way_q  <= '0;
@@ -1004,7 +1001,6 @@ import hpdcache_pkg::*;
                 st2_mshr_alloc_wdata_q       <= st1_req.req.wdata;
                 st2_mshr_alloc_be_q          <= st1_req.req.be;
                 st2_mshr_alloc_is_prefetch_q <= st1_req_is_cmo_prefetch;
-                st2_mshr_alloc_pinned_q      <= st2_mshr_alloc_pinned_d;
                 st2_mshr_alloc_wback_q       <= st2_mshr_alloc_wback_d;
                 st2_mshr_alloc_dirty_q       <= st2_mshr_alloc_dirty_d;
                 st2_mshr_alloc_victim_way_q  <= st1_dir_victim_way;
@@ -1259,7 +1255,6 @@ import hpdcache_pkg::*;
     assign st2_mshr_alloc_victim_way_o  = st2_mshr_alloc_victim_way_q;
     assign st2_mshr_alloc_need_rsp_o    = st2_mshr_alloc_need_rsp_q;
     assign st2_mshr_alloc_is_prefetch_o = st2_mshr_alloc_is_prefetch_q;
-    assign st2_mshr_alloc_pinned_o      = st2_mshr_alloc_pinned_q;
     assign st2_mshr_alloc_wback_o       = st2_mshr_alloc_wback_q;
     assign st2_mshr_alloc_dirty_o       = st2_mshr_alloc_dirty_q;
     //  }}}
