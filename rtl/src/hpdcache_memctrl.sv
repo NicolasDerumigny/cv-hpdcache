@@ -326,16 +326,13 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t                         dir_we_q;
     hpdcache_dir_entry_t [HPDcacheCfg.u.ways-1:0] dir_wentry;
     hpdcache_dir_entry_t [HPDcacheCfg.u.ways-1:0] dir_rentry;
-    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_valid_q;
-    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_pinned_q;
-    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_fetching_q;
+    logic                [HPDcacheCfg.u.ways-1:0] dir_wentry_pin_state_q;
     logic                [HPDcacheCfg.u.ways-1:0] dir_valid;
     logic                [HPDcacheCfg.u.ways-1:0] dir_pinned;
     logic                [HPDcacheCfg.u.ways-1:0] dir_pinned_after_write;
     logic                [HPDcacheCfg.u.ways-1:0] dir_wback;
     logic                [HPDcacheCfg.u.ways-1:0] dir_dirty;
     logic                [HPDcacheCfg.u.ways-1:0] dir_fetch;
-    logic                                         dir_updt_q;
 
     logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_q, sets_fully_pinned_d;
 
@@ -787,12 +784,13 @@ import hpdcache_pkg::*;
 
     //  Pinned state update
     //  {{{
-    //  Fetching lanes are not candidates for pinning (unknown state)
+    //  A way contributes to the fully-pinned state of its set if it is valid
+    //  and pinned. Ways being fetched have an unknown pinning state and are
+    //  conservatively considered as pinned.
     for (gen_i = 0; gen_i < HPDcacheCfg.u.ways; gen_i++) begin : gen_dir_pinned_write
         assign dir_pinned_after_write[gen_i] = dir_we_q[gen_i]
-                                           ? ((dir_wentry_valid_q[gen_i] && dir_wentry_pinned_q[gen_i]) ||
-                                              dir_wentry_fetching_q[gen_i])
-                                           : ((dir_valid[gen_i] && dir_pinned[gen_i]) || dir_fetch[gen_i]);
+                                             ? dir_wentry_pin_state_q[gen_i]
+                                             : ((dir_valid[gen_i] && dir_pinned[gen_i]) || dir_fetch[gen_i]);
     end
 
     always_comb begin
@@ -1108,24 +1106,19 @@ import hpdcache_pkg::*;
     // {{{
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (~rst_ni) begin
-            sets_fully_pinned_q    <= '0;
-            dir_we_q               <= '0;
-            dir_cs_q               <= '0;
-            dir_wentry_valid_q     <= '0;
-            dir_wentry_pinned_q    <= '0;
-            dir_wentry_fetching_q  <= '0;
-            dir_addr_q             <= '0;
-            dir_updt_q             <= '0;
+            sets_fully_pinned_q     <= '0;
+            dir_we_q                <= '0;
+            dir_cs_q                <= '0;
+            dir_wentry_pin_state_q  <= '0;
+            dir_addr_q              <= '0;
         end else begin
             sets_fully_pinned_q <= sets_fully_pinned_d;
             dir_we_q            <= dir_we;
             dir_cs_q            <= dir_cs;
             dir_addr_q          <= dir_addr;
             for (int i = 0; i < HPDcacheCfg.u.ways; i++) begin
-                dir_wentry_valid_q[i]     <= dir_wentry[i].valid;
-                dir_wentry_pinned_q[i]    <= dir_wentry[i].pinned;
-                dir_wentry_fetching_q[i]  <= dir_wentry[i].fetch;
-                dir_updt_q                <= dir_updt_i;
+                dir_wentry_pin_state_q[i] <= (dir_wentry[i].valid && dir_wentry[i].pinned) ||
+                                              dir_wentry[i].fetch;
             end
         end
     end;
