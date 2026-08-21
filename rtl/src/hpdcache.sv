@@ -228,7 +228,6 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t  miss_mshr_alloc_victim_way;
     logic                  miss_mshr_alloc_need_rsp;
     logic                  miss_mshr_alloc_is_prefetch;
-    logic                  miss_mshr_alloc_pinned;
     logic                  miss_mshr_alloc_wback;
     logic                  miss_mshr_alloc_dirty;
 
@@ -557,7 +556,6 @@ import hpdcache_pkg::*;
         .st2_mshr_alloc_victim_way_o        (miss_mshr_alloc_victim_way),
         .st2_mshr_alloc_need_rsp_o          (miss_mshr_alloc_need_rsp),
         .st2_mshr_alloc_is_prefetch_o       (miss_mshr_alloc_is_prefetch),
-        .st2_mshr_alloc_pinned_o            (miss_mshr_alloc_pinned),
         .st2_mshr_alloc_wback_o             (miss_mshr_alloc_wback),
         .st2_mshr_alloc_dirty_o             (miss_mshr_alloc_dirty),
 
@@ -862,7 +860,6 @@ import hpdcache_pkg::*;
         .mshr_alloc_victim_way_i            (miss_mshr_alloc_victim_way),
         .mshr_alloc_need_rsp_i              (miss_mshr_alloc_need_rsp),
         .mshr_alloc_is_prefetch_i           (miss_mshr_alloc_is_prefetch),
-        .mshr_alloc_pinned_i                (miss_mshr_alloc_pinned),
         .mshr_alloc_wback_i                 (miss_mshr_alloc_wback),
         .mshr_alloc_dirty_i                 (miss_mshr_alloc_dirty),
         .mshr_alloc_wdata_i                 (miss_mshr_alloc_wdata),
@@ -899,7 +896,10 @@ import hpdcache_pkg::*;
         .mem_resp_valid_i                   (mem_resp_read_miss_valid),
         .mem_resp_i                         (mem_resp_read_miss),
         .mem_resp_inval_i                   (mem_resp_read_miss_inval),
-        .mem_resp_inval_nline_i             (mem_resp_read_miss_inval_nline)
+        .mem_resp_inval_nline_i             (mem_resp_read_miss_inval_nline),
+
+        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end)
     );
     //  }}}
 

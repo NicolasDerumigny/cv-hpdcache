@@ -115,13 +115,11 @@ import hpdcache_pkg::*;
     //   {{{
     input  logic                   st2_mshr_alloc_i,
     input  logic                   st2_mshr_alloc_is_prefetch_i,
-    input  logic                   st2_mshr_alloc_pinned_i,
     input  logic                   st2_mshr_alloc_wback_i,
     input  logic                   st2_mshr_alloc_dirty_i,
     output logic                   st2_mshr_alloc_o,
     output logic                   st2_mshr_alloc_cs_o,
     output logic                   st2_mshr_alloc_need_rsp_o,
-    output logic                   st2_mshr_alloc_pinned_o,
     output logic                   st2_mshr_alloc_wback_o,
     output logic                   st2_mshr_alloc_dirty_o,
 
@@ -347,7 +345,6 @@ import hpdcache_pkg::*;
         st2_mshr_alloc_o                    = st2_mshr_alloc_i;
         st2_mshr_alloc_cs_o                 = 1'b0;
         st2_mshr_alloc_need_rsp_o           = 1'b0;
-        st2_mshr_alloc_pinned_o             = st2_mshr_alloc_pinned_i;
         st2_mshr_alloc_wback_o              = st2_mshr_alloc_wback_i;
         st2_mshr_alloc_dirty_o              = st2_mshr_alloc_dirty_i;
 
@@ -783,7 +780,6 @@ import hpdcache_pkg::*;
                                 //  Request a MSHR allocation
                                 st2_mshr_alloc_o = 1'b1;
                                 st2_mshr_alloc_need_rsp_o = st1_req_need_rsp_i;
-                                st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                 st2_mshr_alloc_wback_o = (st1_req_wr_auto_i & cfg_default_wb_i) |
                                                           st1_req_wr_wb_i;
                                 st2_mshr_alloc_dirty_o = 1'b0;
@@ -1009,7 +1005,6 @@ import hpdcache_pkg::*;
 
                                     //  Send a miss request to the memory (write-allocate)
                                     st2_mshr_alloc_o = 1'b1;
-                                    st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                     st2_mshr_alloc_wback_o = 1'b1;
 
                                     //  No available slot in the Coalesce Buffer:

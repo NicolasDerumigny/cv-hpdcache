@@ -24,6 +24,8 @@
  *  Description   : HPDcache Miss Handler
  *  History       :
  */
+`include "hpdcache_pinning.svh"
+
 module hpdcache_miss_handler
 //  {{{
 import hpdcache_pkg::*;
@@ -99,7 +101,6 @@ import hpdcache_pkg::*;
     input  hpdcache_way_vector_t  mshr_alloc_victim_way_i,
     input  logic                  mshr_alloc_need_rsp_i,
     input  logic                  mshr_alloc_is_prefetch_i,
-    input  logic                  mshr_alloc_pinned_i,
     input  logic                  mshr_alloc_wback_i,
     input  logic                  mshr_alloc_dirty_i,
     input  hpdcache_req_data_t    mshr_alloc_wdata_i,
@@ -141,7 +142,14 @@ import hpdcache_pkg::*;
     input  logic                  mem_resp_valid_i,
     input  hpdcache_mem_resp_r_t  mem_resp_i,
     input  logic                  mem_resp_inval_i,
-    input  hpdcache_nline_t       mem_resp_inval_nline_i
+    input  hpdcache_nline_t       mem_resp_inval_nline_i,
+
+    //      Pinned region (cacheline granularity)
+    //         Line address of the first pinned cacheline (inclusive) / after
+    //         the last one (exclusive). Used to re-evaluate the pinning state
+    //         of a line at refill time.
+    input  hpdcache_nline_t       csr_pinned_line_addr_start_i,
+    input  hpdcache_nline_t       csr_pinned_line_addr_end_i
     //      }}}
 );
 //  }}}
@@ -238,7 +246,6 @@ import hpdcache_pkg::*;
     hpdcache_word_t          mshr_ack_word;
     logic                    mshr_ack_need_rsp;
     logic                    mshr_ack_is_prefetch;
-    logic                    mshr_ack_pinned;
     logic                    mshr_ack_wback;
     logic                    mshr_ack_dirty;
     cbuf_id_t                mshr_ack_cbuf_id;
@@ -762,7 +769,11 @@ import hpdcache_pkg::*;
                 refill_tid_q <= mshr_ack_req_id;
                 refill_need_rsp_q <= mshr_ack_need_rsp;
                 refill_is_prefetch_q <= mshr_ack_is_prefetch;
-                refill_is_pinned_q <= mshr_ack_pinned;
+                //  The pinning state is re-evaluated at refill time against
+                //  the current CSR-configured region
+                refill_is_pinned_q <= `HPDCACHE_LINE_ADDR_IS_PINNED({mshr_ack_cache_tag, mshr_ack_cache_set},
+                                                                    csr_pinned_line_addr_start_i,
+                                                                    csr_pinned_line_addr_end_i);
                 refill_wback_q <= mshr_ack_wback;
                 refill_dirty_q <= mshr_ack_dirty;
                 refill_dirty_wdata_q <= mshr_ack_wdata;
@@ -812,7 +823,6 @@ import hpdcache_pkg::*;
         .alloc_victim_way_i       (mshr_alloc_victim_way),
         .alloc_need_rsp_i         (mshr_alloc_need_rsp_i),
         .alloc_is_prefetch_i      (mshr_alloc_is_prefetch_i),
-        .alloc_pinned_i           (mshr_alloc_pinned_i),
         .alloc_wback_i            (mshr_alloc_wback_i),
         .alloc_dirty_i            (mshr_alloc_dirty_i),
         .alloc_cbuf_id_i          (mshr_alloc_cbuf_id),
@@ -832,7 +842,6 @@ import hpdcache_pkg::*;
         .ack_need_rsp_o           (mshr_ack_need_rsp),
         .ack_is_prefetch_o        (mshr_ack_is_prefetch),
         .ack_wback_o              (mshr_ack_wback),
-        .ack_pinned_o             (mshr_ack_pinned),
         .ack_dirty_o              (mshr_ack_dirty),
         .ack_cbuf_id_o            (mshr_ack_cbuf_id)
     );
