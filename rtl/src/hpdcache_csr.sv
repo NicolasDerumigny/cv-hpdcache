@@ -42,7 +42,8 @@ import hpdcache_pkg::*;
     parameter type hpdcache_data_word_t = logic,
     parameter type hpdcache_way_vector_t = logic,
     parameter type hpdcache_set_t = logic,
-    parameter type hpdcache_tag_t = logic
+    parameter type hpdcache_tag_t = logic,
+    parameter type hpdcache_nline_t = logic
 )
     // }}}
 
@@ -73,17 +74,18 @@ import hpdcache_pkg::*;
     input  hpdcache_tag_t         dir_tag_i,
     input  hpdcache_data_word_t   dir_pinned_i,
 
-    //     CSR values
-    //     Start of pinned address region (PA)
-    output hpdcache_req_addr_t    csr_pinned_addr_start_o,
-    //     Size of pinned address region
-    output hpdcache_req_addr_t    csr_pinned_addr_size_o
+    //     Pinned region (cacheline granularity)
+    //     Line address of the first pinned cacheline (inclusive)
+    output hpdcache_nline_t       csr_pinned_line_addr_start_o,
+    //     Line address after the last pinned cacheline (exclusive)
+    output hpdcache_nline_t       csr_pinned_line_addr_end_o
 );
     // }}}
 
     //  Definition of internal constants and types
     //  {{{
     localparam int unsigned WORD_TO_PA_PADDING = HPDcacheCfg.u.wordWidth - HPDcacheCfg.u.paWidth;
+    localparam int unsigned WORD_TO_LINE_ADDR_PADDING = HPDcacheCfg.u.wordWidth - HPDcacheCfg.nlineWidth;
 
     typedef enum logic [3:0] {
         HPDCACHE_CFG_REG        = 'h0,
@@ -99,8 +101,10 @@ import hpdcache_pkg::*;
 
     //  Definition of internal registers
     //  {{{
-    hpdcache_req_addr_t csr_pinned_addr_start_q, csr_pinned_addr_start_d;
-    hpdcache_req_addr_t csr_pinned_addr_size_q, csr_pinned_addr_size_d;
+    hpdcache_nline_t    csr_pinned_line_addr_start_q, csr_pinned_line_addr_start_d;
+    hpdcache_nline_t    csr_pinned_line_addr_size_q, csr_pinned_line_addr_size_d;
+    hpdcache_nline_t    csr_pinned_line_addr_end_q, csr_pinned_line_addr_end_d;
+    logic               csr_pinned_line_addr_carry;
     logic               rsp_valid_q, rsp_valid_d;
     logic               stalling;
     hpdcache_rsp_t      rsp_q, rsp_d;
@@ -108,8 +112,8 @@ import hpdcache_pkg::*;
 
     //  Output logic
     //  {{{
-    assign csr_pinned_addr_start_o = csr_pinned_addr_start_q;
-    assign csr_pinned_addr_size_o  = csr_pinned_addr_size_q;
+    assign csr_pinned_line_addr_start_o = csr_pinned_line_addr_start_q;
+    assign csr_pinned_line_addr_end_o   = csr_pinned_line_addr_end_q;
 
     assign rsp_valid_o             = rsp_valid_q;
     assign rsp_o                   = rsp_q;
@@ -129,8 +133,8 @@ import hpdcache_pkg::*;
     // {{{
     always_comb
     begin : main_process
-        csr_pinned_addr_size_d  = csr_pinned_addr_size_q;
-        csr_pinned_addr_start_d = csr_pinned_addr_start_q;
+        csr_pinned_line_addr_size_d  = csr_pinned_line_addr_size_q;
+        csr_pinned_line_addr_start_d = csr_pinned_line_addr_start_q;
 
         rsp_valid_d = stalling ? rsp_valid_q : 1'b0;
         rsp_d.rdata = stalling ? rsp_q.rdata :   '0;
@@ -148,10 +152,14 @@ import hpdcache_pkg::*;
                     if (req_is_store_i) begin
                         unique case (req_addr_i[11:0])
                             HPDCACHE_PINNED_AREA_START: begin
-                                csr_pinned_addr_start_d = req_wdata_i[0][HPDcacheCfg.u.paWidth-1:0];
+                                //  Line address: byte address without the
+                                //  cacheline offset bits. Upper address bits
+                                //  are ignored.
+                                csr_pinned_line_addr_start_d = req_wdata_i[0][HPDcacheCfg.nlineWidth-1:0];
                             end
                             HPDCACHE_PINNED_AREA_SIZE: begin
-                                csr_pinned_addr_size_d = req_wdata_i[0][HPDcacheCfg.u.paWidth-1:0];
+                                //  Region length in cachelines
+                                csr_pinned_line_addr_size_d = req_wdata_i[0][HPDcacheCfg.nlineWidth-1:0];
                             end
                             default: begin
                                 rsp_d.error = 'b1;
@@ -162,10 +170,10 @@ import hpdcache_pkg::*;
 
                         unique case (req_addr_i[11:0])
                             HPDCACHE_PINNED_AREA_START: begin
-                                rsp_d.rdata[0] = {{WORD_TO_PA_PADDING{1'b0}}, csr_pinned_addr_start_q};
+                                rsp_d.rdata[0] = {{WORD_TO_LINE_ADDR_PADDING{1'b0}}, csr_pinned_line_addr_start_q};
                             end
                             HPDCACHE_PINNED_AREA_SIZE: begin
-                                rsp_d.rdata[0] = {{WORD_TO_PA_PADDING{1'b0}}, csr_pinned_addr_size_q};
+                                rsp_d.rdata[0] = {{WORD_TO_LINE_ADDR_PADDING{1'b0}}, csr_pinned_line_addr_size_q};
                             end
                             default: begin
                                 rsp_d.error = 'b1;
@@ -214,6 +222,17 @@ import hpdcache_pkg::*;
                 end
             endcase
         end
+
+        //  End of the pinned region (exclusive). A cacheline is pinned if its
+        //  line address is in [start, start + size).
+        //  size == 0 decodes to an empty region; a region overflowing the top
+        //  of the cacheline space is saturated to cover up to the last line.
+        {csr_pinned_line_addr_carry, csr_pinned_line_addr_end_d} =
+                {1'b0, csr_pinned_line_addr_start_d} + {1'b0, csr_pinned_line_addr_size_d};
+
+        if ((csr_pinned_line_addr_size_d == '0) || csr_pinned_line_addr_carry) begin
+            csr_pinned_line_addr_end_d = csr_pinned_line_addr_carry ? '1 : csr_pinned_line_addr_start_d;
+        end
     end
 
     //  Response handling
@@ -227,15 +246,17 @@ import hpdcache_pkg::*;
     //  {{{
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (~rst_ni) begin
-            csr_pinned_addr_start_q <= '0;
-            csr_pinned_addr_size_q  <= '0;
-            rsp_valid_q             <= '0;
-            rsp_q                   <= '0;
+            csr_pinned_line_addr_start_q <= '0;
+            csr_pinned_line_addr_size_q  <= '0;
+            csr_pinned_line_addr_end_q   <= '0;
+            rsp_valid_q                  <= '0;
+            rsp_q                        <= '0;
         end else begin
-            csr_pinned_addr_start_q <= csr_pinned_addr_start_d;
-            csr_pinned_addr_size_q  <= csr_pinned_addr_size_d;
-            rsp_valid_q             <= rsp_valid_d;
-            rsp_q                   <= rsp_d;
+            csr_pinned_line_addr_start_q <= csr_pinned_line_addr_start_d;
+            csr_pinned_line_addr_size_q  <= csr_pinned_line_addr_size_d;
+            csr_pinned_line_addr_end_q   <= csr_pinned_line_addr_end_d;
+            rsp_valid_q                  <= rsp_valid_d;
+            rsp_q                        <= rsp_d;
         end
     end
     //  }}}
