@@ -95,12 +95,11 @@ import hpdcache_pkg::*;
     hpdcache_tag_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_tag;
     hpdcache_pma_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_pma;
     logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned;
-    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_pinned;
     hpdcache_set_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_early_set;
     hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_early_addr;
     hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] core_req_early_line_addr;
-    hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] core_req_line_addr;
     logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned_conflict;
+    hpdcache_nline_t    core_req_line_addr;
 
     logic [HPDcacheCfg.u.nRequesters-1:0] arb_req_gnt_q, arb_req_gnt_d;
     hpdcache_req_offset_t                 arb_req_addr_offset_q;
@@ -123,11 +122,6 @@ import hpdcache_pkg::*;
             assign core_req_early_pinned_conflict[gen_i] = core_req_i[gen_i].phys_indexed && sets_fully_pinned_i[core_req_early_set[gen_i]]
                                                            && core_req_early_pinned[gen_i]
                                                            && !(is_cmo_inval(core_req_i[gen_i].op) || is_cmo_flush(core_req_i[gen_i].op));
-
-            assign core_req_line_addr[gen_i]       = {core_req_tag[gen_i], arb_req_addr_offset_q}[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
-            assign core_req_pinned[gen_i]          = `HPDCACHE_LINE_ADDR_IS_PINNED(core_req_line_addr[gen_i],
-                                                                                  csr_pinned_line_addr_start_i,
-                                                                                  csr_pinned_line_addr_end_i);
 
             assign core_req_ready_o[gen_i] = arb_req_gnt_d[gen_i] & arb_req_ready_i,
                    core_req_valid[gen_i]   = core_req_valid_i[gen_i],
@@ -171,17 +165,6 @@ import hpdcache_pkg::*;
         .data_o         (arb_req_early_pinned_o)
     );
 
-    //      Pinned multiplexor
-    hpdcache_mux #(
-        .NINPUT         (HPDcacheCfg.u.nRequesters),
-        .DATA_WIDTH     (1),
-        .ONE_HOT_SEL    (1'b1)
-    ) core_req_pinned_mux_i (
-        .data_i         (core_req_pinned),
-        .sel_i          (arb_req_gnt_q),
-        .data_o         (arb_req_pinned_o)
-    );
-
     //      Request abort multiplexor
     hpdcache_mux #(
         .NINPUT         (HPDcacheCfg.u.nRequesters),
@@ -214,6 +197,11 @@ import hpdcache_pkg::*;
         .sel_i          (arb_req_gnt_q),
         .data_o         (arb_pma_o)
     );
+
+    assign core_req_line_addr = {arb_tag_o, arb_req_addr_offset_q}[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth];
+    assign arb_req_pinned_o   = `HPDCACHE_LINE_ADDR_IS_PINNED(core_req_line_addr,
+                                                              csr_pinned_line_addr_start_i,
+                                                              csr_pinned_line_addr_end_i);
 
     //      Save the grant signal and the offset for the tag in the next cycle
     always_ff @(posedge clk_i or negedge rst_ni)
