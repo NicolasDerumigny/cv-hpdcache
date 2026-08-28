@@ -148,6 +148,8 @@ import hpdcache_pkg::*;
     typedef logic unsigned [HPDcacheCfg.clWordIdxWidth-1:0] hpdcache_word_t;
     typedef logic unsigned [HPDcacheCfg.u.ways-1:0] hpdcache_way_vector_t;
     typedef logic unsigned [HPDcacheCfg.wayIndexWidth-1:0] hpdcache_way_t;
+    typedef logic unsigned [HPDcacheCfg.nRequestersWidth-1:0] hpdcache_nreq_t;
+    typedef logic unsigned [HPDcacheCfg.u.nRequesters-1:0] hpdcache_nreq_vector_t;
 
     //  Cache Directory entry definition
     //  {{{
@@ -228,6 +230,7 @@ import hpdcache_pkg::*;
     hpdcache_way_vector_t  miss_mshr_alloc_victim_way;
     logic                  miss_mshr_alloc_need_rsp;
     logic                  miss_mshr_alloc_is_prefetch;
+    logic                  miss_mshr_alloc_pinned;
     logic                  miss_mshr_alloc_wback;
     logic                  miss_mshr_alloc_dirty;
 
@@ -367,10 +370,13 @@ import hpdcache_pkg::*;
     logic                  core_rsp_valid;
     hpdcache_rsp_t         core_rsp;
 
+    hpdcache_nreq_vector_t core_req_stall;
+
     logic                  arb_req_valid;
     logic                  arb_req_ready;
     hpdcache_req_t         arb_req;
     logic                  arb_req_early_pinned;
+    hpdcache_nreq_t        arb_req_requester;
     logic                  arb_abort;
     hpdcache_tag_t         arb_tag;
     logic                  arb_req_pinned;
@@ -436,8 +442,6 @@ import hpdcache_pkg::*;
         {HPDcacheCfg.u.memIdWidth{1'b1}};
     localparam logic [HPDcacheCfg.u.memIdWidth-1:0] HPDCACHE_UC_WRITE_ID =
         {HPDcacheCfg.u.memIdWidth{1'b1}};
-
-    logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned;
     //  }}}
 
     //  Requesters arbiter
@@ -450,15 +454,15 @@ import hpdcache_pkg::*;
         .hpdcache_req_addr_t                (hpdcache_req_addr_t),
         .hpdcache_nline_t                   (hpdcache_nline_t),
         .hpdcache_req_offset_t              (hpdcache_req_offset_t),
-        .hpdcache_rsp_t                     (hpdcache_rsp_t)
+        .hpdcache_rsp_t                     (hpdcache_rsp_t),
+        .hpdcache_nreq_t                    (hpdcache_nreq_t),
+        .hpdcache_nreq_vector_t             (hpdcache_nreq_vector_t)
     ) core_req_arbiter_i (
         .clk_i,
         .rst_ni,
 
-        .sets_fully_pinned_i                (sets_fully_pinned),
-
-        .csr_pinned_line_addr_start_i           (csr_pinned_line_addr_start),
-        .csr_pinned_line_addr_end_i             (csr_pinned_line_addr_end),
+        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end),
 
         .core_req_valid_i,
         .core_req_ready_o,
@@ -476,10 +480,13 @@ import hpdcache_pkg::*;
         .arb_req_ready_i                    (arb_req_ready),
         .arb_req_o                          (arb_req),
         .arb_req_early_pinned_o             (arb_req_early_pinned),
+        .arb_req_requester_o                (arb_req_requester),
         .arb_abort_o                        (arb_abort),
         .arb_tag_o                          (arb_tag),
         .arb_req_pinned_o                   (arb_req_pinned),
-        .arb_pma_o                          (arb_pma)
+        .arb_pma_o                          (arb_pma),
+
+        .req_stall_i                        (core_req_stall)
     );
     //  }}}
 
@@ -517,15 +524,19 @@ import hpdcache_pkg::*;
         .hpdcache_req_be_t                  (hpdcache_req_be_t),
         .hpdcache_req_t                     (hpdcache_req_t),
         .hpdcache_rsp_t                     (hpdcache_rsp_t),
+        .hpdcache_nreq_t                    (hpdcache_nreq_t),
+        .hpdcache_nreq_vector_t             (hpdcache_nreq_vector_t),
         .CFIG_BASE                          (CFIG_BASE)
     ) hpdcache_ctrl_i(
         .clk_i,
         .rst_ni,
 
         .core_req_valid_i                   (arb_req_valid),
+        .core_req_stall_o                   (core_req_stall),
         .core_req_ready_o                   (arb_req_ready),
         .core_req_i                         (arb_req),
         .core_req_early_pinned_i            (arb_req_early_pinned),
+        .core_req_requester_i               (arb_req_requester),
         .core_req_abort_i                   (arb_abort),
         .core_req_tag_i                     (arb_tag),
         .core_req_pinned_i                  (arb_req_pinned),
@@ -556,6 +567,7 @@ import hpdcache_pkg::*;
         .st2_mshr_alloc_victim_way_o        (miss_mshr_alloc_victim_way),
         .st2_mshr_alloc_need_rsp_o          (miss_mshr_alloc_need_rsp),
         .st2_mshr_alloc_is_prefetch_o       (miss_mshr_alloc_is_prefetch),
+        .st2_mshr_alloc_pinned_o            (miss_mshr_alloc_pinned),
         .st2_mshr_alloc_wback_o             (miss_mshr_alloc_wback),
         .st2_mshr_alloc_dirty_o             (miss_mshr_alloc_dirty),
 
@@ -716,8 +728,6 @@ import hpdcache_pkg::*;
         .cfg_scrub_period_i,
         .cfg_scrub_restart_i,
 
-        .sets_fully_pinned_o                (sets_fully_pinned),
-
         .evt_cache_write_miss_o,
         .evt_cache_read_miss_o,
         .evt_cache_dir_unc_err_o,
@@ -860,6 +870,7 @@ import hpdcache_pkg::*;
         .mshr_alloc_victim_way_i            (miss_mshr_alloc_victim_way),
         .mshr_alloc_need_rsp_i              (miss_mshr_alloc_need_rsp),
         .mshr_alloc_is_prefetch_i           (miss_mshr_alloc_is_prefetch),
+        .mshr_alloc_pinned_i                (miss_mshr_alloc_pinned),
         .mshr_alloc_wback_i                 (miss_mshr_alloc_wback),
         .mshr_alloc_dirty_i                 (miss_mshr_alloc_dirty),
         .mshr_alloc_wdata_i                 (miss_mshr_alloc_wdata),
@@ -896,10 +907,7 @@ import hpdcache_pkg::*;
         .mem_resp_valid_i                   (mem_resp_read_miss_valid),
         .mem_resp_i                         (mem_resp_read_miss),
         .mem_resp_inval_i                   (mem_resp_read_miss_inval),
-        .mem_resp_inval_nline_i             (mem_resp_read_miss_inval_nline),
-
-        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start),
-        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end)
+        .mem_resp_inval_nline_i             (mem_resp_read_miss_inval_nline)
     );
     //  }}}
 
@@ -1110,8 +1118,8 @@ import hpdcache_pkg::*;
         .dir_tag_i                     (csr_dir_tag),
         .dir_pinned_i                  (csr_dir_pinned),
 
-        .csr_pinned_line_addr_start_o      (csr_pinned_line_addr_start),
-        .csr_pinned_line_addr_end_o        (csr_pinned_line_addr_end)
+        .csr_pinned_line_addr_start_o  (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_o    (csr_pinned_line_addr_end)
     );
     //  }}}
 

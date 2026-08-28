@@ -83,8 +83,8 @@ import hpdcache_pkg::*;
     input  logic                   st1_dir_hit_dirty_i,
     input  logic                   st1_dir_hit_fetch_i,
     input  logic                   st1_dir_victim_unavailable_i,
+    input  logic                   st1_dir_victim_all_ways_pinned_i,
     input  logic                   st1_dir_victim_valid_i,
-    input  logic                   st1_dir_victim_pinned_i,
     input  logic                   st1_dir_victim_wback_i,
     input  logic                   st1_dir_victim_dirty_i,
     input  logic                   st1_dir_err_cor_i,
@@ -115,11 +115,13 @@ import hpdcache_pkg::*;
     //   {{{
     input  logic                   st2_mshr_alloc_i,
     input  logic                   st2_mshr_alloc_is_prefetch_i,
+    input  logic                   st2_mshr_alloc_pinned_i,
     input  logic                   st2_mshr_alloc_wback_i,
     input  logic                   st2_mshr_alloc_dirty_i,
     output logic                   st2_mshr_alloc_o,
     output logic                   st2_mshr_alloc_cs_o,
     output logic                   st2_mshr_alloc_need_rsp_o,
+    output logic                   st2_mshr_alloc_pinned_o,
     output logic                   st2_mshr_alloc_wback_o,
     output logic                   st2_mshr_alloc_dirty_o,
 
@@ -160,6 +162,7 @@ import hpdcache_pkg::*;
     output logic                   st1_rtab_wbuf_hit_o,
     output logic                   st1_rtab_wbuf_not_ready_o,
     output logic                   st1_rtab_dir_unavailable_o,
+    output logic                   st1_rtab_dir_pinned_full_o,
     output logic                   st1_rtab_dir_fetch_o,
     output logic                   st1_rtab_flush_hit_o,
     output logic                   st1_rtab_flush_not_ready_o,
@@ -345,6 +348,7 @@ import hpdcache_pkg::*;
         st2_mshr_alloc_o                    = st2_mshr_alloc_i;
         st2_mshr_alloc_cs_o                 = 1'b0;
         st2_mshr_alloc_need_rsp_o           = 1'b0;
+        st2_mshr_alloc_pinned_o             = st2_mshr_alloc_pinned_i;
         st2_mshr_alloc_wback_o              = st2_mshr_alloc_wback_i;
         st2_mshr_alloc_dirty_o              = st2_mshr_alloc_dirty_i;
 
@@ -372,6 +376,7 @@ import hpdcache_pkg::*;
         st1_rtab_wbuf_hit_o                 = 1'b0;
         st1_rtab_wbuf_not_ready_o           = 1'b0;
         st1_rtab_dir_unavailable_o          = 1'b0;
+        st1_rtab_dir_pinned_full_o          = 1'b0;
         st1_rtab_dir_fetch_o                = 1'b0;
         st1_rtab_flush_hit_o                = 1'b0;
         st1_rtab_flush_not_ready_o          = 1'b0;
@@ -728,6 +733,7 @@ import hpdcache_pkg::*;
                             else if (st1_dir_victim_unavailable_i) begin
                                 st1_rtab_alloc = 1'b1;
                                 st1_rtab_dir_unavailable_o = 1'b1;
+                                st1_rtab_dir_pinned_full_o = st1_dir_victim_all_ways_pinned_i;
                             end
 
                             //  Hit on an open entry of the write buffer: wait for the entry to be
@@ -780,6 +786,7 @@ import hpdcache_pkg::*;
                                 //  Request a MSHR allocation
                                 st2_mshr_alloc_o = 1'b1;
                                 st2_mshr_alloc_need_rsp_o = st1_req_need_rsp_i;
+                                st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                 st2_mshr_alloc_wback_o = (st1_req_wr_auto_i & cfg_default_wb_i) |
                                                           st1_req_wr_wb_i;
                                 st2_mshr_alloc_dirty_o = 1'b0;
@@ -787,7 +794,7 @@ import hpdcache_pkg::*;
                                 //  Update the cache directory state to FETCHING
                                 st2_dir_updt_o = 1'b1;
                                 st2_dir_updt_valid_o = st1_dir_victim_valid_i;
-                                st2_dir_updt_pinned_o = st1_dir_victim_pinned_i;
+                                st2_dir_updt_pinned_o = 1'b0; // Victim is never pinned
                                 st2_dir_updt_wback_o = st1_dir_victim_wback_i;
                                 st2_dir_updt_dirty_o = 1'b0;
                                 st2_dir_updt_fetch_o = 1'b1;
@@ -982,6 +989,7 @@ import hpdcache_pkg::*;
                                     //  Put the request in the replay table
                                     st1_rtab_alloc = 1'b1;
                                     st1_rtab_dir_unavailable_o = 1'b1;
+                                    st1_rtab_dir_pinned_full_o = st1_dir_victim_all_ways_pinned_i;
                                 end
 
                                 //  Flush needed but the controller is not ready
@@ -998,13 +1006,14 @@ import hpdcache_pkg::*;
                                     //  Update the directory state of the cacheline to FETCHING
                                     st2_dir_updt_o = 1'b1;
                                     st2_dir_updt_valid_o = st1_dir_victim_valid_i;
-                                    st2_dir_updt_pinned_o = st1_dir_victim_pinned_i;
+                                    st2_dir_updt_pinned_o = 1'b0; // Victim is never pinned
                                     st2_dir_updt_wback_o = st1_dir_victim_wback_i;
                                     st2_dir_updt_dirty_o = 1'b0;
                                     st2_dir_updt_fetch_o = 1'b1;
 
                                     //  Send a miss request to the memory (write-allocate)
                                     st2_mshr_alloc_o = 1'b1;
+                                    st2_mshr_alloc_pinned_o = st1_req_is_pinned_i;
                                     st2_mshr_alloc_wback_o = 1'b1;
 
                                     //  No available slot in the Coalesce Buffer:

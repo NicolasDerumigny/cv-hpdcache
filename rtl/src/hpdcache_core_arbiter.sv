@@ -38,7 +38,9 @@ import hpdcache_pkg::*;
     parameter type hpdcache_req_addr_t = logic,
     parameter type hpdcache_nline_t = logic,
     parameter type hpdcache_req_offset_t = logic,
-    parameter type hpdcache_rsp_t = logic
+    parameter type hpdcache_rsp_t = logic,
+    parameter type hpdcache_nreq_t = logic,
+    parameter type hpdcache_nreq_vector_t = logic
 )
     //  }}}
 
@@ -48,9 +50,6 @@ import hpdcache_pkg::*;
     //      Clock and reset signals
     input  logic                          clk_i,
     input  logic                          rst_ni,
-
-    //      Pinned set state
-    input  logic [HPDcacheCfg.u.sets-1:0] sets_fully_pinned_i,
 
     //      Pinned region (cacheline granularity)
     //         Line address of the first pinned cacheline (inclusive) / after
@@ -79,10 +78,14 @@ import hpdcache_pkg::*;
     input  logic                          arb_req_ready_i,
     output hpdcache_req_t                 arb_req_o,
     output logic                          arb_req_early_pinned_o,
+    output hpdcache_nreq_t                arb_req_requester_o,
     output logic                          arb_abort_o,
     output hpdcache_tag_t                 arb_tag_o,
     output logic                          arb_req_pinned_o,
-    output hpdcache_pma_t                 arb_pma_o
+    output hpdcache_pma_t                 arb_pma_o,
+
+    //      Pinned (stall) logic
+    input  hpdcache_nreq_vector_t         req_stall_i
 );
 
     //  }}}
@@ -95,10 +98,8 @@ import hpdcache_pkg::*;
     hpdcache_tag_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_tag;
     hpdcache_pma_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_pma;
     logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned;
-    hpdcache_set_t      [HPDcacheCfg.u.nRequesters-1:0] core_req_early_set;
     hpdcache_req_addr_t [HPDcacheCfg.u.nRequesters-1:0] core_req_early_addr;
     hpdcache_nline_t    [HPDcacheCfg.u.nRequesters-1:0] core_req_early_line_addr;
-    logic               [HPDcacheCfg.u.nRequesters-1:0] core_req_early_pinned_conflict;
     hpdcache_nline_t    core_req_line_addr;
 
     logic [HPDcacheCfg.u.nRequesters-1:0] arb_req_gnt_q, arb_req_gnt_d;
@@ -117,11 +118,6 @@ import hpdcache_pkg::*;
             assign core_req_early_pinned[gen_i]   = `HPDCACHE_LINE_ADDR_IS_PINNED(core_req_early_line_addr[gen_i],
                                                                                  csr_pinned_line_addr_start_i,
                                                                                  csr_pinned_line_addr_end_i);
-            assign core_req_early_set[gen_i]      = core_req_i[gen_i].addr_offset[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.setWidth];
-            // No conflicts on cycle 1, as all store req are physically indexed in the CVA6
-            assign core_req_early_pinned_conflict[gen_i] = core_req_i[gen_i].phys_indexed && sets_fully_pinned_i[core_req_early_set[gen_i]]
-                                                           && core_req_early_pinned[gen_i]
-                                                           && !(is_cmo_inval(core_req_i[gen_i].op) || is_cmo_flush(core_req_i[gen_i].op));
 
             assign core_req_ready_o[gen_i] = arb_req_gnt_d[gen_i] & arb_req_ready_i,
                    core_req_valid[gen_i]   = core_req_valid_i[gen_i],
@@ -138,9 +134,17 @@ import hpdcache_pkg::*;
     (
         .clk_i,
         .rst_ni,
-        .req_i          (core_req_valid & ~core_req_early_pinned_conflict),
+        .req_i          (core_req_valid & ~req_stall_i),
         .gnt_o          (arb_req_gnt_d),
         .ready_i        (arb_req_ready_i)
+    );
+
+    //     Requester id
+    hpdcache_1hot_to_binary #(
+        .N              (HPDcacheCfg.u.nRequesters)
+    ) core_req_requester (
+        .val_i          (arb_req_gnt_d),
+        .val_o          (arb_req_requester_o)
     );
 
     //      Request multiplexor

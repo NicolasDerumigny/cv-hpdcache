@@ -19,8 +19,10 @@ import hpdcache_pkg::*;
 
     parameter type hpdcache_nline_t = logic,
     parameter type hpdcache_way_t = logic,
+    parameter type hpdcache_set_t = logic,
 
     parameter type hpdcache_req_addr_t = logic,
+    parameter type hpdcache_nreq_vector_t = logic,
 
     parameter type rtab_ptr_t = logic,
     parameter type rtab_cnt_t = logic,
@@ -96,6 +98,12 @@ import hpdcache_pkg::*;
     //  Configuration parameters
     input  logic                  cfg_single_entry_i, // Enable only one entry of the table
 
+    //  Pinning logic
+    output hpdcache_nreq_vector_t stalled_req_o,      // To the arbitrer
+    input  logic                  unpinned_valid_i,   // Control signal for `unpinned_set_i`
+    input  hpdcache_set_t         unpinned_set_i,     // Sets with at least one unpinned entry next cycle
+    input  logic                  fully_pinned_set_i, // Incoming request arrives on a fully pinned set
+
     //  Global control signals
     input  logic                  no_pend_trans_i
 );
@@ -148,6 +156,7 @@ import hpdcache_pkg::*;
 //  {{{
     rtab_entry_t        [N-1:0]  req_q;
     rtab_ptr_t          [N-1:0]  next_q;
+    logic               [N-1:0]  stalled_entry_pinned_q, stalled_entry_pinned_d;
 
     rtab_pop_try_state_e         pop_try_state_q, pop_try_state_d;
     logic               [N-1:0]  pop_try_next_q, pop_try_next_d;
@@ -191,7 +200,7 @@ import hpdcache_pkg::*;
     hpdcache_req_addr_t [N-1:0]  addr;
     logic               [N-1:0]  is_read_bv;
     logic               [N-1:0]  fence_bv;
-    logic                        fence_only;
+    logic                        fence_or_stalled_only;
     logic               [N-1:0]  check_hit;
     logic               [N-1:0]  match_check_nline;
     logic               [N-1:0]  match_check_tail;
@@ -200,6 +209,9 @@ import hpdcache_pkg::*;
     logic               [N-1:0]  match_refill_set;
     logic               [N-1:0]  match_refill_way;
     logic               [N-1:0]  match_flush_nline;
+    logic               [N-1:0]  match_unpinned_set;
+
+    logic               [N-1:0]  linked_to_stalled_entry_q, linked_to_stalled_entry_d;
 
     logic               [N-1:0]  free;
     logic               [N-1:0]  free_alloc;
@@ -221,7 +233,37 @@ import hpdcache_pkg::*;
         assign nodeps[gen_i] = ~(|deps_q[gen_i]);
     end
 
-    assign ready        = valid_q & head_q & nodeps;
+    //  compute which entries are stalled due to pinning
+    always_comb
+    begin : pinned_stall_comb
+        stalled_entry_pinned_d = stalled_entry_pinned_q;
+        linked_to_stalled_entry_d = '0;
+        for (int i = 0; i < N; i++) begin
+            if (valid_set[i] | pop_rback_bv[i]) begin
+                stalled_entry_pinned_d[i] = fully_pinned_set_i;//FIXME: && is_store(alloc_req_i.req.req.op);
+            end else if (valid_q[i] && match_unpinned_set[i]) begin
+                stalled_entry_pinned_d[i] = 1'b0;
+            end
+        end
+        for (int i = 0; i < N; i++) begin
+            if (valid_q[i] && valid_q[next_q[i]] && (linked_to_stalled_entry_q[i] || stalled_entry_pinned_q[i])) begin
+                linked_to_stalled_entry_d[next_q[i]] |= 1'b1;
+            end
+        end
+    end
+
+    //  compute stalled requesters
+    always_comb
+    begin : stalled_requesters_comb
+        stalled_req_o = '0;
+        for (int i=0; i<N; i++) begin
+            if (stalled_entry_pinned_d[i]) begin
+                stalled_req_o[req_q[i].req.requester] |= 1'b1;
+            end
+        end
+    end
+
+    assign ready        = valid_q & head_q & nodeps & ~stalled_entry_pinned_q;
     assign free         = ~valid_q;
 
     //  compute the free vector (one-hot signal)
@@ -233,7 +275,7 @@ import hpdcache_pkg::*;
     );
 
     //  full and empty signals
-    assign empty_o = &(~valid_q);
+    assign empty_o = &(~(valid_q & ~stalled_entry_pinned_q & ~linked_to_stalled_entry_d));
     assign  full_o = &( valid_q) | (|valid_q & cfg_single_entry_i);
     assign fence_o = |fence_bv;
 //  }}}
@@ -249,7 +291,8 @@ import hpdcache_pkg::*;
         assign fence_bv[gen_i] = deps_q[gen_i].pend_trans;
     end
 
-    assign fence_only       = (valid_q == fence_bv);
+    assign fence_or_stalled_only = (valid_q == (fence_bv | stalled_entry_pinned_q | linked_to_stalled_entry_d));
+
     assign check_hit        = valid_q & match_check_nline;
     assign check_hit_o      = |check_hit;
     assign match_check_tail = check_hit & tail_q;
@@ -287,6 +330,9 @@ import hpdcache_pkg::*;
         assign match_refill_nline[gen_i] = (refill_nline_i == nline[gen_i]);
         assign match_refill_set[gen_i] = (refill_nline_i[0 +: HPDcacheCfg.setWidth] ==
                                           nline[gen_i][0 +: HPDcacheCfg.setWidth]);
+
+        assign match_unpinned_set[gen_i] = unpinned_valid_i && (unpinned_set_i ==
+                                            nline[gen_i][0 +: HPDcacheCfg.setWidth]);
         assign match_refill_way[gen_i] = (refill_way_index_i == req_q[gen_i].way_fetch);
     end
 
@@ -437,7 +483,10 @@ import hpdcache_pkg::*;
 
             //  Update pending transaction dependency
             //  {{{
-            deps_rst[i].pend_trans = no_pend_trans_i & fence_only;
+            deps_rst[i].pend_trans = no_pend_trans_i & fence_or_stalled_only;
+            if (stalled_entry_pinned_q[i] && match_unpinned_set[i]) begin
+                deps_rst[i].dir_unavailable = 1;
+            end
             // }}}
         end
     end
@@ -648,9 +697,11 @@ import hpdcache_pkg::*;
         if (!rst_ni) begin
             pop_try_state_q <= POP_TRY_HEAD;
             pop_try_next_q  <= '0;
+            linked_to_stalled_entry_q <= '0;
         end else begin
             pop_try_state_q <= pop_try_state_d;
             pop_try_next_q  <= pop_try_next_d;
+            linked_to_stalled_entry_q <= linked_to_stalled_entry_d;
         end
     end
 
@@ -658,7 +709,9 @@ import hpdcache_pkg::*;
     begin : rtab_ff
         if (!rst_ni) begin
             req_q <= '0;
+            stalled_entry_pinned_q <= '0;
         end else begin
+            stalled_entry_pinned_q <= stalled_entry_pinned_d;
             for (int i = 0; i < N; i++) begin
                 //  Update the request array
                 //    A RTAB request is stored at allocation time, but can be modified during
