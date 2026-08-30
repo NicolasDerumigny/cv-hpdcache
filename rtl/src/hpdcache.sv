@@ -375,11 +375,9 @@ import hpdcache_pkg::*;
     logic                  arb_req_valid;
     logic                  arb_req_ready;
     hpdcache_req_t         arb_req;
-    logic                  arb_req_early_pinned;
     hpdcache_nreq_t        arb_req_requester;
     logic                  arb_abort;
     hpdcache_tag_t         arb_tag;
-    logic                  arb_req_pinned;
     hpdcache_pma_t         arb_pma;
 
     logic                  mem_req_read_miss_ready;
@@ -461,9 +459,6 @@ import hpdcache_pkg::*;
         .clk_i,
         .rst_ni,
 
-        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start),
-        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end),
-
         .core_req_valid_i,
         .core_req_ready_o,
         .core_req_i,
@@ -479,11 +474,9 @@ import hpdcache_pkg::*;
         .arb_req_valid_o                    (arb_req_valid),
         .arb_req_ready_i                    (arb_req_ready),
         .arb_req_o                          (arb_req),
-        .arb_req_early_pinned_o             (arb_req_early_pinned),
         .arb_req_requester_o                (arb_req_requester),
         .arb_abort_o                        (arb_abort),
         .arb_tag_o                          (arb_tag),
-        .arb_req_pinned_o                   (arb_req_pinned),
         .arb_pma_o                          (arb_pma),
 
         .req_stall_i                        (core_req_stall)
@@ -535,12 +528,13 @@ import hpdcache_pkg::*;
         .core_req_stall_o                   (core_req_stall),
         .core_req_ready_o                   (arb_req_ready),
         .core_req_i                         (arb_req),
-        .core_req_early_pinned_i            (arb_req_early_pinned),
         .core_req_requester_i               (arb_req_requester),
         .core_req_abort_i                   (arb_abort),
         .core_req_tag_i                     (arb_tag),
-        .core_req_pinned_i                  (arb_req_pinned),
         .core_req_pma_i                     (arb_pma),
+
+        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start),
+        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end),
 
         .core_rsp_valid_o                   (core_rsp_valid),
         .core_rsp_o                         (core_rsp),

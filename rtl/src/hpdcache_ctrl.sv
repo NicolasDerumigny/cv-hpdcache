@@ -10,6 +10,8 @@
  *  Description   : HPDcache controller
  *  History       :
  */
+`include "hpdcache_pinning.svh"
+
 module hpdcache_ctrl
     // Package imports
     // {{{
@@ -65,12 +67,16 @@ import hpdcache_pkg::*;
     output hpdcache_nreq_vector_t core_req_stall_o,
     output logic                  core_req_ready_o,
     input  hpdcache_req_t         core_req_i,
-    input  logic                  core_req_early_pinned_i,
     input  hpdcache_nreq_t        core_req_requester_i,
     input  logic                  core_req_abort_i,
     input  hpdcache_tag_t         core_req_tag_i,
-    input  logic                  core_req_pinned_i,
     input  hpdcache_pma_t         core_req_pma_i,
+
+    //      Pinned region (cacheline granularity)
+    //         Line address of the first pinned cacheline (inclusive) / after
+    //         the last one (exclusive)
+    input  hpdcache_nline_t       csr_pinned_line_addr_start_i,
+    input  hpdcache_nline_t       csr_pinned_line_addr_end_i,
 
     //      Core response interface
     output logic                  core_rsp_valid_o,
@@ -332,7 +338,6 @@ import hpdcache_pkg::*;
     //  {{{
     logic                    st1_req_valid_q, st1_req_valid_d;
     hpdcache_req_x_t         st1_req_q;
-    logic                    st1_req_pinned_q;
     rtab_ptr_t               st1_rtab_pop_try_ptr_q;
 
     logic                    st2_mshr_alloc_q, st2_mshr_alloc_d;
@@ -380,7 +385,6 @@ import hpdcache_pkg::*;
     // Pipeline Stage 0
     hpdcache_req_x_t         st0_req;
     hpdcache_req_addr_t      st0_req_addr;
-    logic                    st0_req_pinned;
     logic                    st0_req_is_uncacheable;
     logic                    st0_req_is_load;
     logic                    st0_req_is_scrub;
@@ -410,6 +414,7 @@ import hpdcache_pkg::*;
     logic                    st1_req_cachedata_write_merge;
     hpdcache_pma_t           st1_req_pma;
     hpdcache_tag_t           st1_req_tag;
+    logic                    st1_req_pa_pinned;
     hpdcache_set_t           st1_req_set;
     hpdcache_word_t          st1_req_word;
     hpdcache_nline_t         st1_req_nline;
@@ -568,8 +573,6 @@ import hpdcache_pkg::*;
     assign st0_req_is_partial = (hpdcache_uint'(st0_req.req.size) < HPDcacheCfg.wordByteIdxWidth);
     assign st0_req_addr       = {st0_req.req.addr_tag, st0_req.req.addr_offset};
     assign st0_req_is_csr     = (st0_req_addr >> 20) == CFIG_BASE;
-    assign st0_req_pinned     = st0_rtab_pop_try_valid ? st0_rtab_pop_try_req.req.is_pinned
-                                                         : core_req_early_pinned_i;
     //  }}}
 
     //  Decode operation in stage 1
@@ -601,6 +604,15 @@ import hpdcache_pkg::*;
     //         requester in stage 1
     assign st1_req_tag = st1_req_q.req.phys_indexed ? st1_req_q.req.addr_tag : core_req_tag_i;
 
+    //  Pinned state of a new request: st1_req_tag holds the physical tag
+    //  (from the registered stage-0 request if physically-indexed, from the
+    //  stage-1 interface if virtually-indexed), so a single pinning region
+    //  check on the physical line address covers both cases
+    assign st1_req_pa_pinned = `HPDCACHE_LINE_ADDR_IS_PINNED(
+            {st1_req_tag, st1_req_q.req.addr_offset}[HPDcacheCfg.clOffsetWidth +: HPDcacheCfg.nlineWidth],
+            csr_pinned_line_addr_start_i,
+            csr_pinned_line_addr_end_i);
+
     always_comb
     begin : st1_req_comb
         st1_req = st1_req_q;
@@ -609,11 +621,10 @@ import hpdcache_pkg::*;
             st1_req.req.pma      = st1_req_pma;
         end
 
-        //  In case of replay or physically-indexed cache, the pinning state comes
-        //  from stage 0 (captured in the st1_req_pinned_q register). Otherwise,
-        //  it comes directly from the requester in stage 1. Note that requests
-        //  replayed from the RTAB are always physically indexed.
-        st1_req.is_pinned = st1_req_q.req.phys_indexed ? st1_req_pinned_q : core_req_pinned_i;
+        //  The pinning state of a replayed request is the one captured at RTAB
+        //  allocation time. For new requests, it comes from the pinning region
+        //  check on the physical line address, computed in stage 1.
+        st1_req.is_pinned = st1_req_q.from_rtab ? st1_req_q.is_pinned : st1_req_pa_pinned;
     end
 
     //         A requester can ask to abort a request it initiated on the
@@ -957,7 +968,6 @@ import hpdcache_pkg::*;
         end else begin
             if (core_req_ready_o | st0_rtab_pop_try_ready) begin
                 st1_req_q <= st0_req;
-                st1_req_pinned_q <= st0_req_pinned;
             end
         end
     end
