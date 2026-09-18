@@ -64,11 +64,6 @@ import hpdcache_pkg::*;
     input  hpdcache_req_data_t    req_old_data_i,
     //  }}}
 
-    //  Write buffer interface
-    //  {{{
-    output logic                  wbuf_flush_all_o,
-    //  }}}
-
     //  AMO Cache Interface
     //  {{{
     output logic                  data_amo_write_o,
@@ -300,8 +295,8 @@ import hpdcache_pkg::*;
         uc_sc_retcode_d        = uc_sc_retcode_q;
         wbuf_flush_all_o       = 1'b0;
         lrsc_rsrv_addr_d       = lrsc_rsrv_addr_q;
-        lrsc_uc_set            = 'b0;
-        lrsc_uc_reset          = 'b0;
+        lrsc_uc_set            = 1'b0;
+        lrsc_uc_reset          = 1'b0;
 
         uc_fsm_d               = uc_fsm_q;
 
@@ -311,8 +306,6 @@ import hpdcache_pkg::*;
             UC_IDLE: begin
 
                 if (req_valid_i) begin
-                    wbuf_flush_all_o = 1'b1;
-
                     unique case (1'b1)
                         req_op_i.is_ld,
                         req_op_i.is_st: begin
