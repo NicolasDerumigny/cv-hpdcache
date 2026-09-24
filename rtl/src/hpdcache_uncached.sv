@@ -293,7 +293,6 @@ import hpdcache_pkg::*;
         rsp_error_set          = 1'b0;
         rsp_error_rst          = 1'b0;
         uc_sc_retcode_d        = uc_sc_retcode_q;
-        wbuf_flush_all_o       = 1'b0;
         lrsc_rsrv_addr_d       = lrsc_rsrv_addr_q;
         lrsc_uc_set            = 1'b0;
         lrsc_uc_reset          = 1'b0;
