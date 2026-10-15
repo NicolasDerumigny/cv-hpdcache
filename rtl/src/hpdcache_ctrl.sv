@@ -898,8 +898,12 @@ import hpdcache_pkg::*;
         way_fetch : st1_dir_hit_way_index
     };
 
-    assign rtab_unpinned_valid = cmo_dir_updt_i | refill_write_dir_i;
-    assign rtab_unpinned_set = cmo_dir_updt_i ? cmo_dir_updt_set_i : (refill_write_dir_i ? refill_set_i : '0);
+    assign rtab_unpinned_valid = cmo_dir_updt_i | (st2_dir_updt_q && !st2_dir_updt_pinned_q) | refill_write_dir_i;
+    assign rtab_unpinned_set = (cmo_dir_updt_i ? cmo_dir_updt_set_i :
+                                   (st2_dir_updt_q ? st2_dir_updt_set_q :
+                                        (refill_write_dir_i ? refill_set_i : '0)
+                                   )
+                               );
 
     hpdcache_rtab #(
         .HPDcacheCfg                        (HPDcacheCfg),

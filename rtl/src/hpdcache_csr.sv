@@ -145,7 +145,7 @@ import hpdcache_pkg::*;
 
         if (req_valid_i && !stalling) begin
             unique case (req_addr_i[19:16])
-            HPDCACHE_CFG_REG: begin
+                HPDCACHE_CFG_REG: begin
                     if (req_addr_i[15:12] != '0) begin
                         rsp_d.error = 'b1;
                     end
