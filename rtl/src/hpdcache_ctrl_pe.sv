@@ -223,6 +223,14 @@ import hpdcache_pkg::*;
     output logic                   csr_core_rsp_ready_o,
     //   }}}
 
+    //   Pinned region writeback
+    //   {{{
+    //   The writeback controller owns the cache directory to read then update a
+    //   directory entry, and owns the cache while it writes back an invalidated
+    //   cacheline: no request must be granted meanwhile
+    input  logic                   wb_busy_i,
+    //   }}}
+
     //   Configuration
     //   {{{
     input  logic                   cfg_prefetch_updt_plru_i,
@@ -1200,33 +1208,69 @@ import hpdcache_pkg::*;
                                     st1_nop = 1'b1;
 
                                 end else begin
-                                    // Update the directory state of the cacheline to dirty
-                                    if (!st1_dir_hit_wback_i || !st1_dir_hit_dirty_i) begin
-                                        st2_dir_updt_o        = 1'b1;
-                                        st2_dir_updt_valid_o  = 1'b1;
-                                        st2_dir_updt_pinned_o = st1_req_is_pinned_i;
-                                        st2_dir_updt_wback_o  = 1'b1;
-                                        st2_dir_updt_dirty_o  = 1'b1;
-                                        st2_dir_updt_fetch_o  = 1'b0;
+                                    //  A pinned store hitting a cacheline which is dirty
+                                    //  but not pinned yet holds a value dirtied before the
+                                    //  activation of the region: the flush controller writes
+                                    //  that value to the memory before the store overwrites
+                                    //  it. The cacheline is pinned at once, so the writeback
+                                    //  walk leaves it alone, and the store is replayed once
+                                    //  the flush has been acknowledged by the memory
+                                    if (st1_req_is_pinned_i && st1_dir_hit_dirty_i &&
+                                        !st1_dir_hit_pinned_i) begin
+                                        //  Flush controller not ready: try again later
+                                        if (!st1_flush_alloc_ready_i) begin
+                                            st1_rtab_alloc = 1'b1;
+                                            st1_rtab_flush_not_ready_o = 1'b1;
 
-                                        st1_nop = 1'b1;
+                                            st1_nop = 1'b1;
+                                        end else begin
+                                            //  Flush the value the store is about to overwrite
+                                            st2_flush_alloc_o = 1'b1;
+
+                                            //  The cacheline is pinned and clean: the flush
+                                            //  controller owns its value until the store replays
+                                            st2_dir_updt_o        = 1'b1;
+                                            st2_dir_updt_valid_o  = 1'b1;
+                                            st2_dir_updt_pinned_o = 1'b1;
+                                            st2_dir_updt_wback_o  = 1'b1;
+                                            st2_dir_updt_dirty_o  = 1'b0;
+                                            st2_dir_updt_fetch_o  = 1'b0;
+
+                                            //  Wait for the flush before writing the data RAM
+                                            st1_rtab_alloc = 1'b1;
+                                            st1_rtab_flush_hit_o = 1'b1;
+
+                                            st1_nop = 1'b1;
+                                        end
+                                    end else begin
+                                        // Update the directory state of the cacheline to dirty
+                                        if (!st1_dir_hit_wback_i || !st1_dir_hit_dirty_i) begin
+                                            st2_dir_updt_o        = 1'b1;
+                                            st2_dir_updt_valid_o  = 1'b1;
+                                            st2_dir_updt_pinned_o = st1_req_is_pinned_i;
+                                            st2_dir_updt_wback_o  = 1'b1;
+                                            st2_dir_updt_dirty_o  = 1'b1;
+                                            st2_dir_updt_fetch_o  = 1'b0;
+
+                                            st1_nop = 1'b1;
+                                        end
+
+                                        //  If the request comes from the replay table, free the
+                                        //  corresponding RTAB entry
+                                        st1_rtab_commit_o = st1_req_rtab_i;
+
+                                        //  Respond to the core (if needed)
+                                        st1_rsp_valid_o = st1_req_need_rsp_i;
+
+                                        //  Write in the data RAM
+                                        st1_req_cachedata_write_enable_o = 1'b1;
+
+                                        //  Update victim selection for the accessed set
+                                        st1_req_cachedir_updt_sel_victim_o = 1'b1;
+
+                                        //  Performance event
+                                        evt_write_req_o = 1'b1;
                                     end
-
-                                    //  If the request comes from the replay table, free the
-                                    //  corresponding RTAB entry
-                                    st1_rtab_commit_o = st1_req_rtab_i;
-
-                                    //  Respond to the core (if needed)
-                                    st1_rsp_valid_o = st1_req_need_rsp_i;
-
-                                    //  Write in the data RAM
-                                    st1_req_cachedata_write_enable_o = 1'b1;
-
-                                    //  Update victim selection for the accessed set
-                                    st1_req_cachedir_updt_sel_victim_o = 1'b1;
-
-                                    //  Performance event
-                                    evt_write_req_o = 1'b1;
                                 end
                             end
                             //  }}}
@@ -1331,6 +1375,7 @@ import hpdcache_pkg::*;
                                & ~rtab_full_i
                                & ~csr_busy_i
                                & ~cmo_busy_i
+                               & ~wb_busy_i
                                & ~uc_busy_i
                                & ~err_busy_i
                                & ~rtab_fence_i
@@ -1341,6 +1386,7 @@ import hpdcache_pkg::*;
                                & ~refill_req_valid_i
                                & ~rtab_full_i
                                & ~cmo_busy_i
+                               & ~wb_busy_i
                                & ~uc_busy_i
                                & ~err_busy_i
                                & ~rtab_fence_i
@@ -1349,11 +1395,13 @@ import hpdcache_pkg::*;
             rtab_req_ready_o = rtab_req_valid_i
                                & ~refill_req_valid_i
                                & ~cmo_busy_i
+                               & ~wb_busy_i
                                & ~err_busy_i
                                & ~nop;
 
             refill_req_ready_o = refill_req_valid_i
                                  & ~cmo_busy_i
+                                 & ~wb_busy_i
                                  & (~err_busy_i | err_wait_i)
                                  & ~st1_req_valid_i
                                  & ~(st2_mshr_alloc_i | st2_dir_updt_i);
@@ -1411,6 +1459,12 @@ import hpdcache_pkg::*;
             //  }}}
         end
         //  }}} end of normal pipeline operation
+
+        //  An invalidated entry is never left pinned: a way which is invalid and
+        //  pinned is selected by no victim policy
+        if (!st2_dir_updt_valid_o) begin
+            st2_dir_updt_pinned_o = 1'b0;
+        end
     end
     //  }}}
 endmodule

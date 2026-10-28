@@ -570,7 +570,7 @@ import hpdcache_pkg::*;
     //  In case of error in the refill response, invalidate pre-allocated cache directory entry
     assign refill_dir_entry_o = '{
         valid   : ~refill_is_error_o,
-        pinned  : refill_pinned_q,
+        pinned  : ~refill_is_error_o & refill_pinned_q,
         wback   : ~refill_is_error_o & refill_wback_q,
         dirty   : ~refill_is_error_o & refill_dirty_q,
         fetch   : 1'b0,

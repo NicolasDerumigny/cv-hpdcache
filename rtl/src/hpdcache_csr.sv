@@ -77,8 +77,15 @@ import hpdcache_pkg::*;
     //     Pinned region (cacheline granularity)
     //     Line address of the first pinned cacheline (inclusive)
     output hpdcache_nline_t       csr_pinned_line_addr_start_o,
-    //     Line address after the last pinned cacheline (exclusive)
-    output hpdcache_nline_t       csr_pinned_line_addr_end_o
+    //     Line address after the last cacheline of the region (exclusive)
+    output hpdcache_nline_t       csr_pinned_line_addr_end_o,
+
+    //     Pinned region writeback
+    //     Pulse when the pinned region is modified: triggers the writeback of the
+    //     dirty unpinned cachelines of the new region
+    output logic                  writeback_start_o,
+    //     Set to 1 when the writeback of all the cachelines is complete
+    input  logic                  writeback_done_i
 );
     // }}}
 
@@ -95,7 +102,8 @@ import hpdcache_pkg::*;
 
     typedef enum logic [11:0] {
         HPDCACHE_PINNED_AREA_START = 'h00,
-        HPDCACHE_PINNED_AREA_SIZE  = 'h08
+        HPDCACHE_PINNED_AREA_SIZE  = 'h08,
+        HPDCACHE_WRITEBACK_STATUS  = 'h10
     } hpdcache_cfg_reg_offset_e;
     //  }}}
 
@@ -105,6 +113,8 @@ import hpdcache_pkg::*;
     hpdcache_nline_t    csr_pinned_line_addr_size_q, csr_pinned_line_addr_size_d;
     hpdcache_nline_t    csr_pinned_line_addr_end_q, csr_pinned_line_addr_end_d;
     logic               csr_pinned_line_addr_carry;
+    logic               csr_writeback_done_q, csr_writeback_done_d;
+    logic               csr_writeback_start;
     logic               rsp_valid_q, rsp_valid_d;
     logic               stalling;
     hpdcache_rsp_t      rsp_q, rsp_d;
@@ -115,6 +125,7 @@ import hpdcache_pkg::*;
     assign csr_pinned_line_addr_start_o = csr_pinned_line_addr_start_q;
     assign csr_pinned_line_addr_end_o   = csr_pinned_line_addr_end_q;
 
+    assign writeback_start_o       = csr_writeback_start;
     assign rsp_valid_o             = rsp_valid_q;
     assign rsp_o                   = rsp_q;
     //  }}}
@@ -133,8 +144,13 @@ import hpdcache_pkg::*;
     // {{{
     always_comb
     begin : main_process
+        automatic hpdcache_nline_t req_line_addr;
+
         csr_pinned_line_addr_size_d  = csr_pinned_line_addr_size_q;
         csr_pinned_line_addr_start_d = csr_pinned_line_addr_start_q;
+
+        csr_writeback_start  = 1'b0;
+        csr_writeback_done_d = csr_writeback_done_q;
 
         rsp_valid_d = stalling ? rsp_valid_q : 1'b0;
         rsp_d.rdata = stalling ? rsp_q.rdata :   '0;
@@ -144,6 +160,10 @@ import hpdcache_pkg::*;
         dir_read_tag_o = '0;
 
         if (req_valid_i && !stalling) begin
+            //  Line address written by the request: byte address without the
+            //  cacheline offset bits. Upper address bits are ignored.
+            req_line_addr = req_wdata_i[0][HPDcacheCfg.nlineWidth-1:0];
+
             unique case (req_addr_i[19:16])
                 HPDCACHE_CFG_REG: begin
                     if (req_addr_i[15:12] != '0) begin
@@ -155,11 +175,31 @@ import hpdcache_pkg::*;
                                 //  Line address: byte address without the
                                 //  cacheline offset bits. Upper address bits
                                 //  are ignored.
-                                csr_pinned_line_addr_start_d = req_wdata_i[0][HPDcacheCfg.nlineWidth-1:0];
+                                csr_pinned_line_addr_start_d = req_line_addr;
+
+                                //  Modifying the region triggers its writeback;
+                                //  writing the same value leaves nothing to write
+                                if (req_line_addr != csr_pinned_line_addr_start_q) begin
+                                    csr_writeback_start  = 1'b1;
+                                    csr_writeback_done_d = 1'b0;
+                                end else begin
+                                    csr_writeback_done_d = 1'b1;
+                                end
                             end
                             HPDCACHE_PINNED_AREA_SIZE: begin
                                 //  Region length in cachelines
-                                csr_pinned_line_addr_size_d = req_wdata_i[0][HPDcacheCfg.nlineWidth-1:0];
+                                csr_pinned_line_addr_size_d = req_line_addr;
+
+                                if (req_line_addr != csr_pinned_line_addr_size_q) begin
+                                    csr_writeback_start  = 1'b1;
+                                    csr_writeback_done_d = 1'b0;
+                                end else begin
+                                    csr_writeback_done_d = 1'b1;
+                                end
+                            end
+                            HPDCACHE_WRITEBACK_STATUS: begin
+                                //  Read-only status register
+                                rsp_d.error = 'b1;
                             end
                             default: begin
                                 rsp_d.error = 'b1;
@@ -174,6 +214,9 @@ import hpdcache_pkg::*;
                             end
                             HPDCACHE_PINNED_AREA_SIZE: begin
                                 rsp_d.rdata[0] = {{WORD_TO_LINE_ADDR_PADDING{1'b0}}, csr_pinned_line_addr_size_q};
+                            end
+                            HPDCACHE_WRITEBACK_STATUS: begin
+                                rsp_d.rdata[0] = {{WORD_TO_LINE_ADDR_PADDING{1'b0}}, csr_writeback_done_q};
                             end
                             default: begin
                                 rsp_d.error = 'b1;
@@ -233,6 +276,14 @@ import hpdcache_pkg::*;
         if ((csr_pinned_line_addr_size_d == '0) || csr_pinned_line_addr_carry) begin
             csr_pinned_line_addr_end_d = csr_pinned_line_addr_carry ? '1 : csr_pinned_line_addr_start_d;
         end
+
+        //  The status register is set when the writeback controller reports
+        //  that all the cachelines have been polled and written back. A new
+        //  trigger in the same cycle takes precedence over the completion of
+        //  the previous writeback.
+        if (writeback_done_i && !csr_writeback_start) begin
+            csr_writeback_done_d = 1'b1;
+        end
     end
 
     //  Response handling
@@ -249,12 +300,14 @@ import hpdcache_pkg::*;
             csr_pinned_line_addr_start_q <= '0;
             csr_pinned_line_addr_size_q  <= '0;
             csr_pinned_line_addr_end_q   <= '0;
+            csr_writeback_done_q         <= '0;
             rsp_valid_q                  <= '0;
             rsp_q                        <= '0;
         end else begin
             csr_pinned_line_addr_start_q <= csr_pinned_line_addr_start_d;
             csr_pinned_line_addr_size_q  <= csr_pinned_line_addr_size_d;
             csr_pinned_line_addr_end_q   <= csr_pinned_line_addr_end_d;
+            csr_writeback_done_q         <= csr_writeback_done_d;
             rsp_valid_q                  <= rsp_valid_d;
             rsp_q                        <= rsp_d;
         end

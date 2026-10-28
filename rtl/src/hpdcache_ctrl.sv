@@ -251,6 +251,16 @@ import hpdcache_pkg::*;
     output  hpdcache_tag_t        csr_dir_tag_o,
     output  hpdcache_data_word_t  csr_dir_pinned_o,
 
+    //  Pinned region writeback: when the pinned region is modified, the
+    //  writeback controller walks the directory and writes back, then invalidates,
+    //  the dirty unpinned cachelines of the new region
+    input   logic                 writeback_start_i,
+    output  logic                 writeback_done_o,
+    output  logic                 wb_flush_alloc_req_o,
+    input   logic                 wb_flush_alloc_grant_i,
+    output  hpdcache_nline_t      wb_flush_alloc_nline_o,
+    output  hpdcache_way_vector_t wb_flush_alloc_way_o,
+
     output logic                  rtab_empty_o,
     output logic                  ctrl_empty_o,
 
@@ -508,6 +518,30 @@ import hpdcache_pkg::*;
     hpdcache_req_data_t      data_req_read_data;
 
     logic                    rd_wr_conflict;
+
+    //  Pinned region writeback controller
+    logic                    wb_busy;
+    logic                    wb_dir_check_entry;
+    hpdcache_set_t           wb_dir_check_entry_set;
+    hpdcache_way_vector_t    wb_dir_check_entry_way;
+    logic                    wb_dir_check_entry_valid;
+    logic                    wb_dir_check_entry_pinned;
+    logic                    wb_dir_check_entry_dirty;
+    logic                    wb_dir_check_entry_wback;
+    logic                    wb_dir_check_entry_fetch;
+    hpdcache_tag_t           wb_dir_check_entry_tag;
+    logic                    wb_dir_updt;
+    hpdcache_set_t           wb_dir_updt_set;
+    hpdcache_way_vector_t    wb_dir_updt_way;
+    hpdcache_tag_t           wb_dir_updt_tag;
+    logic                    wb_dir_updt_valid;
+    logic                    wb_dir_updt_pinned;
+    logic                    wb_dir_updt_wback;
+    logic                    wb_dir_updt_dirty;
+    logic                    wb_dir_updt_fetch;
+    logic                    wb_pipe_idle;
+    logic                    wb_pipe_req_pending_d, wb_pipe_req_pending_q;
+    logic                    wb_dir_in_use;
     //  }}}
 
     //  Decoding of the request in stage 0
@@ -831,6 +865,8 @@ import hpdcache_pkg::*;
         .csr_busy_i,
         .csr_req_valid_o,
         .csr_core_rsp_ready_o,
+
+        .wb_busy_i                          (wb_busy),
 
         .cfg_prefetch_updt_plru_i,
         .cfg_default_wb_i,
@@ -1193,6 +1229,26 @@ import hpdcache_pkg::*;
         .dir_cmo_updt_dirty_i          (cmo_dir_updt_dirty_i),
         .dir_cmo_updt_fetch_i          (cmo_dir_updt_fetch_i),
 
+        .dir_wb_check_entry_i          (wb_dir_check_entry),
+        .dir_wb_check_entry_set_i      (wb_dir_check_entry_set),
+        .dir_wb_check_entry_way_i      (wb_dir_check_entry_way),
+        .dir_wb_check_entry_valid_o    (wb_dir_check_entry_valid),
+        .dir_wb_check_entry_pinned_o   (wb_dir_check_entry_pinned),
+        .dir_wb_check_entry_dirty_o    (wb_dir_check_entry_dirty),
+        .dir_wb_check_entry_wback_o    (wb_dir_check_entry_wback),
+        .dir_wb_check_entry_fetch_o    (wb_dir_check_entry_fetch),
+        .dir_wb_check_entry_tag_o      (wb_dir_check_entry_tag),
+
+        .dir_wb_updt_i                 (wb_dir_updt),
+        .dir_wb_updt_set_i             (wb_dir_updt_set),
+        .dir_wb_updt_way_i             (wb_dir_updt_way),
+        .dir_wb_updt_tag_i             (wb_dir_updt_tag),
+        .dir_wb_updt_valid_i           (wb_dir_updt_valid),
+        .dir_wb_updt_pinned_i          (wb_dir_updt_pinned),
+        .dir_wb_updt_wback_i           (wb_dir_updt_wback),
+        .dir_wb_updt_dirty_i           (wb_dir_updt_dirty),
+        .dir_wb_updt_fetch_i           (wb_dir_updt_fetch),
+
         .dir_err_cor_o                 (st1_dir_err_cor),
         .dir_err_unc_o                 (st1_dir_err_unc),
         .dir_err_valid_o               (st1_dir_err_valid),
@@ -1255,6 +1311,106 @@ import hpdcache_pkg::*;
     );
 
     assign st1_dir_hit = |st1_dir_hit_way;
+    //  }}}
+
+    //  Pinned region writeback controller
+    //  {{{
+    //  The cache is free for the writeback controller: the pipeline is empty and
+    //  none of the processes using the cache out of the pipeline (miss handler,
+    //  CMO, uncached and error controllers) is active. It is the lowest priority
+    //  user of the cache, so the cache keeps handling requests during a walk.
+    //  Only registered signals are used: this signal gates the request acceptance
+    //  it is built from, and the processes idle when the controller takes the
+    //  cache need a grant from this module to become active, which is inhibited
+    //  meanwhile (see wb_busy_i).
+    assign wb_pipe_idle         = hpdcache_init_ready
+                                & ctrl_empty_o
+                                & ~refill_busy_i
+                                & ~refill_req_valid_i
+                                & ~cmo_busy_i
+                                & ~uc_busy_i
+                                & ~err_busy;
+
+    //  A request waiting to enter the pipeline: the walk yields the directory to
+    //  it, up to YIELD_MAX cycles. Registered to avoid a combinational loop with
+    //  the acceptance signals it is built from; the one cycle latency only delays
+    //  an optimization
+    assign wb_pipe_req_pending_d  = core_req_valid_i
+                                  | scrub_req_valid
+                                  | st0_rtab_pop_try_valid
+                                  | refill_req_valid_i;
+
+    always_ff @(posedge clk_i or negedge rst_ni)
+    begin : wb_pipe_req_pending_ff
+        if (!rst_ni) begin
+            wb_pipe_req_pending_q <= 1'b0;
+        end else begin
+            wb_pipe_req_pending_q <= wb_pipe_req_pending_d;
+        end
+    end
+
+    //  A process accessing the cache directory out of the pipeline: it has
+    //  priority over the writeback controller in the directory multiplexer, so
+    //  the controller reads again the entry it was evaluating. As for
+    //  wb_pipe_idle, only registered signals are used; the pipeline is covered by
+    //  wb_busy, which an assertion below checks.
+    assign wb_dir_in_use        = st2_dir_updt_q
+                                | refill_write_dir_i
+                                | inval_check_dir_i
+                                | inval_write_dir_i
+                                | cmo_dir_check_entry_i
+                                | cmo_dir_updt_i
+                                | err_dir_read
+                                | err_dir_write;
+
+    hpdcache_pinned_writeback #(
+        .HPDcacheCfg                        (HPDcacheCfg),
+        .hpdcache_nline_t                   (hpdcache_nline_t),
+        .hpdcache_tag_t                     (hpdcache_tag_t),
+        .hpdcache_set_t                     (hpdcache_set_t),
+        .hpdcache_way_vector_t              (hpdcache_way_vector_t)
+    ) hpdcache_pinned_writeback_i(
+        .clk_i,
+        .rst_ni,
+
+        .writeback_busy_o                   (wb_busy),
+        .writeback_done_o                   (writeback_done_o),
+
+        .pipe_idle_i                        (wb_pipe_idle),
+        .pipe_req_pending_i                 (wb_pipe_req_pending_q),
+        .dir_in_use_i                       (wb_dir_in_use),
+
+        .writeback_start_i                  (writeback_start_i),
+
+        .csr_pinned_line_addr_start_i       (csr_pinned_line_addr_start_i),
+        .csr_pinned_line_addr_end_i         (csr_pinned_line_addr_end_i),
+
+        .dir_check_entry_o                  (wb_dir_check_entry),
+        .dir_check_entry_set_o              (wb_dir_check_entry_set),
+        .dir_check_entry_way_o              (wb_dir_check_entry_way),
+        .dir_check_entry_valid_i            (wb_dir_check_entry_valid),
+        .dir_check_entry_pinned_i           (wb_dir_check_entry_pinned),
+        .dir_check_entry_dirty_i            (wb_dir_check_entry_dirty),
+        .dir_check_entry_wback_i            (wb_dir_check_entry_wback),
+        .dir_check_entry_fetch_i            (wb_dir_check_entry_fetch),
+        .dir_check_entry_tag_i              (wb_dir_check_entry_tag),
+
+        .dir_updt_o                         (wb_dir_updt),
+        .dir_updt_set_o                     (wb_dir_updt_set),
+        .dir_updt_way_o                     (wb_dir_updt_way),
+        .dir_updt_tag_o                     (wb_dir_updt_tag),
+        .dir_updt_valid_o                   (wb_dir_updt_valid),
+        .dir_updt_pinned_o                  (wb_dir_updt_pinned),
+        .dir_updt_wback_o                   (wb_dir_updt_wback),
+        .dir_updt_dirty_o                   (wb_dir_updt_dirty),
+        .dir_updt_fetch_o                   (wb_dir_updt_fetch),
+
+        .flush_empty_i                      (flush_empty_i),
+        .flush_alloc_req_o                  (wb_flush_alloc_req_o),
+        .flush_alloc_grant_i                (wb_flush_alloc_grant_i),
+        .flush_alloc_nline_o                (wb_flush_alloc_nline_o),
+        .flush_alloc_way_o                  (wb_flush_alloc_way_o)
+    );
     //  }}}
 
     //  CSR / pinned cache hooks
@@ -1863,6 +2019,24 @@ import hpdcache_pkg::*;
     assert property (@(posedge clk_i) disable iff (rst_ni !== 1'b1)
             $onehot0({core_req_ready_o, st0_rtab_pop_try_ready, refill_req_ready_o})) else
                     $error("ctrl: only one request can be served per cycle");
+
+    //  Check that the pinned region writeback controller accesses the cache
+    //  directory alone. It is the lowest priority process: it only takes the
+    //  directory when the cache pipeline and the other processes leave it free
+    assert property (@(posedge clk_i) disable iff (rst_ni !== 1'b1)
+            (wb_dir_check_entry | wb_dir_updt) |->
+            ~(st0_req_cachedir_read | st2_dir_updt_q | refill_write_dir_i
+              | inval_check_dir_i | inval_write_dir_i | cmo_dir_check_entry_i
+              | cmo_dir_updt_i | err_dir_read | err_dir_write)) else
+                    $error("ctrl: concurrent accesses to the cache directory");
+
+    //  Check that a pinned store never overwrites a cacheline which is dirty
+    //  and not pinned yet: the value it holds is written back beforehand
+    assert property (@(posedge clk_i) disable iff (rst_ni !== 1'b1)
+            (st1_req_valid_q && st1_req_is_store && st1_req.is_pinned &&
+             st1_req_cachedata_write_enable)
+            |-> ~(st1_dir_hit_dirty && ~st1_dir_hit_pinned)) else
+                    $error("ctrl: pinned store overwriting a dirty cacheline");
 
     //  Check that requests have a valid size field. The check is not necessary for the fence,
     //  invalidation and flush CMOs because these requests do not use the size field.

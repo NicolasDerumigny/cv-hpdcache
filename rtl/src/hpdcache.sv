@@ -333,6 +333,14 @@ import hpdcache_pkg::*;
     hpdcache_data_word_t   csr_dir_pinned;
     hpdcache_nline_t       csr_pinned_line_addr_start;
     hpdcache_nline_t       csr_pinned_line_addr_end;
+    logic                  csr_writeback_start;
+    logic                  csr_writeback_done;
+
+    logic                  wb_flush_alloc;
+    logic                  wb_flush_alloc_req;
+    logic                  wb_flush_alloc_grant;
+    hpdcache_nline_t       wb_flush_alloc_nline;
+    hpdcache_way_vector_t  wb_flush_alloc_way;
 
     logic                  flush_empty;
     logic                  flush_busy;
@@ -688,6 +696,13 @@ import hpdcache_pkg::*;
         .csr_dir_way_i                      (csr_dir_way),
         .csr_dir_tag_o                      (csr_dir_tag),
         .csr_dir_pinned_o                   (csr_dir_pinned),
+
+        .writeback_start_i                  (csr_writeback_start),
+        .writeback_done_o                   (csr_writeback_done),
+        .wb_flush_alloc_req_o               (wb_flush_alloc_req),
+        .wb_flush_alloc_grant_i             (wb_flush_alloc_grant),
+        .wb_flush_alloc_nline_o             (wb_flush_alloc_nline),
+        .wb_flush_alloc_way_o               (wb_flush_alloc_way),
 
         .rtab_empty_o                       (rtab_empty),
         .ctrl_empty_o                       (ctrl_empty),
@@ -1074,18 +1089,33 @@ import hpdcache_pkg::*;
         .dir_pinned_i                  (csr_dir_pinned),
 
         .csr_pinned_line_addr_start_o  (csr_pinned_line_addr_start),
-        .csr_pinned_line_addr_end_o    (csr_pinned_line_addr_end)
+        .csr_pinned_line_addr_end_o    (csr_pinned_line_addr_end),
+
+        .writeback_start_o             (csr_writeback_start),
+        .writeback_done_i              (csr_writeback_done)
     );
     //  }}}
 
     //  Flush controller
     //  {{{
+    //  Allocation of an entry in the flush controller is shared between the
+    //  cache controller, the CMO handler and the pinned region writeback
+    //  controller. The writeback controller has the lowest priority, so it can
+    //  only allocate when the other two are not allocating in the same cycle.
+    assign wb_flush_alloc_grant = flush_alloc_ready
+                                & ~ctrl_flush_alloc
+                                & ~cmo_flush_alloc;
+
+    assign wb_flush_alloc = wb_flush_alloc_req & wb_flush_alloc_grant;
+
     if (HPDcacheCfg.u.wbEn) begin : gen_flush
-        assign flush_alloc = ctrl_flush_alloc | cmo_flush_alloc;
+        assign flush_alloc = ctrl_flush_alloc | cmo_flush_alloc | wb_flush_alloc;
         assign flush_alloc_nline =
-            ctrl_flush_alloc ? ctrl_flush_alloc_nline : cmo_flush_alloc_nline;
+            ctrl_flush_alloc ? ctrl_flush_alloc_nline :
+            (cmo_flush_alloc ? cmo_flush_alloc_nline : wb_flush_alloc_nline);
         assign flush_alloc_way =
-            ctrl_flush_alloc ? ctrl_flush_alloc_way : cmo_flush_alloc_way;
+            ctrl_flush_alloc ? ctrl_flush_alloc_way :
+            (cmo_flush_alloc ? cmo_flush_alloc_way : wb_flush_alloc_way);
 
         hpdcache_flush #(
             .HPDcacheCfg                   (HPDcacheCfg),
@@ -1385,8 +1415,8 @@ import hpdcache_pkg::*;
     //  {{{
 `ifndef HPDCACHE_ASSERT_OFF
     assert property (@(posedge clk_i) disable iff (rst_ni !== 1'b1)
-        ctrl_flush_alloc |-> !cmo_flush_alloc) else
-            $error("Unsupported concurrent flush from ctrl and cmo");
+        $onehot0({ctrl_flush_alloc, cmo_flush_alloc, wb_flush_alloc})) else
+            $error("Unsupported concurrent flush from ctrl, cmo and pinned writeback");
 
     if (!(HPDcacheCfg.u.wordWidth inside {32, 64})) begin : gen_word_width_assertion
         $fatal(1, "word width shall be 32 or 64");

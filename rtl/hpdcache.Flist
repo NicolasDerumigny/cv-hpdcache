@@ -45,6 +45,7 @@ ${HPDCACHE_DIR}/rtl/src/hpdcache_csr.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_ctrl.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_ctrl_pe.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_memctrl.sv
+${HPDCACHE_DIR}/rtl/src/hpdcache_pinned_writeback.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_cbuf.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_miss_handler.sv
 ${HPDCACHE_DIR}/rtl/src/hpdcache_mshr.sv

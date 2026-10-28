@@ -115,6 +115,27 @@ import hpdcache_pkg::*;
     input  logic                                dir_cmo_updt_dirty_i,
     input  logic                                dir_cmo_updt_fetch_i,
 
+    //          Pinned region writeback
+    input  logic                                dir_wb_check_entry_i,
+    input  hpdcache_set_t                       dir_wb_check_entry_set_i,
+    input  hpdcache_way_vector_t                dir_wb_check_entry_way_i,
+    output logic                                dir_wb_check_entry_valid_o,
+    output logic                                dir_wb_check_entry_pinned_o,
+    output logic                                dir_wb_check_entry_dirty_o,
+    output logic                                dir_wb_check_entry_wback_o,
+    output logic                                dir_wb_check_entry_fetch_o,
+    output hpdcache_tag_t                       dir_wb_check_entry_tag_o,
+
+    input  logic                                dir_wb_updt_i,
+    input  hpdcache_set_t                       dir_wb_updt_set_i,
+    input  hpdcache_way_vector_t                dir_wb_updt_way_i,
+    input  hpdcache_tag_t                       dir_wb_updt_tag_i,
+    input  logic                                dir_wb_updt_valid_i,
+    input  logic                                dir_wb_updt_pinned_i,
+    input  logic                                dir_wb_updt_wback_i,
+    input  logic                                dir_wb_updt_dirty_i,
+    input  logic                                dir_wb_updt_fetch_i,
+
     //          Directory Error Correction
     //          {{{
     //              To stage 1
@@ -560,6 +581,32 @@ import hpdcache_pkg::*;
                 end
             end
 
+            //  Cache directory entry check from the pinned region writeback
+            dir_wb_check_entry_i: begin
+                dir_addr    = dir_wb_check_entry_set_i;
+                dir_cs      = dir_wb_check_entry_way_i;
+                dir_we      = '0;
+                dir_wentry  = '0;
+            end
+
+            //  Cache directory entry refresh from the pinned region writeback
+            dir_wb_updt_i: begin
+                dir_addr    = dir_wb_updt_set_i;
+                dir_cs      = dir_wb_updt_way_i;
+                dir_we      = dir_wb_updt_way_i;
+
+                for (hpdcache_uint i = 0; i < HPDcacheCfg.u.ways; i++) begin
+                    dir_wentry[i] = '{
+                        valid: dir_wb_updt_valid_i,
+                        pinned: dir_wb_updt_pinned_i,
+                        wback: dir_wb_updt_wback_i,
+                        dirty: dir_wb_updt_dirty_i,
+                        fetch: dir_wb_updt_fetch_i,
+                        tag  : dir_wb_updt_tag_i
+                    };
+                end
+            end
+
             //  Cache directory match tag -> hit
             dir_updt_i: begin
                 dir_addr    = dir_updt_set_i;
@@ -685,6 +732,24 @@ import hpdcache_pkg::*;
         .data_i      (dir_tags),
         .sel_i       (dir_req_way_q),
         .data_o      (dir_cmo_check_entry_tag_o)
+    );
+
+    //  The pinned region writeback controller shares the registered way of the
+    //  last directory read: it is exclusive with the other processes (see the
+    //  concurrent_dir_access_assert assertion below)
+    assign dir_wb_check_entry_valid_o  = |(dir_req_way_q & dir_valid);
+    assign dir_wb_check_entry_pinned_o = |(dir_req_way_q & dir_pinned);
+    assign dir_wb_check_entry_dirty_o  = |(dir_req_way_q & dir_dirty);
+    assign dir_wb_check_entry_wback_o  = |(dir_req_way_q & dir_wback);
+    assign dir_wb_check_entry_fetch_o  = |(dir_req_way_q & dir_fetch);
+    hpdcache_mux #(
+        .NINPUT      (HPDcacheCfg.u.ways),
+        .DATA_WIDTH  (HPDcacheCfg.tagWidth),
+        .ONE_HOT_SEL (1'b1)
+    ) writeback_tag_mux_i(
+        .data_i      (dir_tags),
+        .sel_i       (dir_req_way_q),
+        .data_o      (dir_wb_check_entry_tag_o)
     );
 
     assign dir_victim_valid_o = |(dir_victim_way_o & dir_valid);
@@ -1043,6 +1108,8 @@ import hpdcache_pkg::*;
             end
             if (dir_cmo_check_entry_i) begin
                 dir_req_way_q <= dir_cmo_check_entry_way_i;
+            end else if (dir_wb_check_entry_i) begin
+                dir_req_way_q <= dir_wb_check_entry_way_i;
             end
         end
     end
@@ -1136,6 +1203,13 @@ import hpdcache_pkg::*;
                 $error("hpdcache_memctrl: wrong directory state - dirty but not valid");
     end
 
+    for (gen_i = 0; gen_i < HPDcacheCfg.u.ways; gen_i++) begin : gen_check_pinned_state
+        check_pinned_state: assert property (@(posedge clk_i)
+                disable iff ((rst_ni !== 1'b1) || (init_q !== 1'b1))
+                (dir_cs[gen_i] & ~dir_we[gen_i]) |=> (dir_pinned[gen_i] |-> dir_valid[gen_i])) else
+                $error("hpdcache_memctrl: wrong directory state - pinned but not valid");
+    end
+
     concurrent_dir_access_assert: assert property (@(posedge clk_i) disable iff (rst_ni !== 1'b1)
             $onehot0({~init_q,
                       dir_match_i,
@@ -1144,6 +1218,8 @@ import hpdcache_pkg::*;
                       dir_inval_write_i,
                       dir_cmo_check_entry_i,
                       dir_cmo_updt_i,
+                      dir_wb_check_entry_i,
+                      dir_wb_updt_i,
                       dir_updt_i,
                       dir_err_read_i,
                       dir_err_write_i})) else
