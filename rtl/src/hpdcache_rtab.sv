@@ -240,7 +240,7 @@ import hpdcache_pkg::*;
         linked_to_stalled_entry_d = '0;
         for (int i = 0; i < N; i++) begin
             if (valid_set[i] | pop_rback_bv[i]) begin
-                stalled_entry_pinned_d[i] = fully_pinned_set_i;//FIXME: && is_store(alloc_req_i.req.req.op);
+                stalled_entry_pinned_d[i] = fully_pinned_set_i;
             end else if (valid_q[i] && match_unpinned_set[i]) begin
                 stalled_entry_pinned_d[i] = 1'b0;
             end

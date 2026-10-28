@@ -8,11 +8,64 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Cacheline pinning: a memory region, defined by two new control registers
+  (`pinned_line_addr_start`, the line address of the first pinned cacheline,
+  and `pinned_line_addr_size`, the length of the region in cachelines; CFIG
+  segment, offsets 0x00 and 0x08), can be pinned in the cache. The cachelines of
+  that region are never selected as victims by the replacement algorithm (PLRU
+  or pseudo-random), so they cannot be evicted by other cachelines, and they are
+  always allocated with the write-back policy, whatever the write-policy hint
+  of the request is.
+- New `pinned` metadata bit in the cache directory (one bit per way, stored in
+  the Tag RAM) recording whether a cacheline belongs to the pinned region. It
+  is maintained by the pipeline, the refill path, the CMO handler and the
+  pinned region writeback controller, and it is taken into account by the
+  victim selection logic.
+- Handling of the case where all the ways of a set are already pinned: a pinned
+  request that needs to allocate a cacheline in such a set is kept in the RTAB
+  and replayed as soon as the directory shows at least one unpinned way in that
+  set. Requests that do not belong to the pinned region are executed as
+  uncacheable requests in that case.
+- New control/status registers block (`hpdcache_csr`) which services the
+  accesses issued by the requesters to the CFIG address segment. It implements
+  the pinned region registers and read-only status registers to check the tag of
+  a cacheline (segment 0x1) and its pinned status (segment 0x2), given the set
+  and the way.
+- Pinned region writeback: when the pinned region control registers
+  (`pinned_line_addr_start` or `pinned_line_addr_size`) are modified, the cache
+  walks the whole directory and writes back to memory, then invalidates, every
+  dirty cacheline of the new region which is not marked pinned yet, i.e. the
+  cachelines which should have been pinned when they were dirtied. The activated
+  region therefore holds no cacheline dirtied before its activation; the pinned
+  bit of the other cachelines is aligned with the new region and the cachelines
+  already pinned are left untouched. The walk is the lowest priority user of the
+  cache directory, so the cache keeps executing requests while it is on-going. A
+  new read-only status register (CFIG segment, offset 0x10) is set when the walk
+  and all its writebacks are complete, and cleared when the region is modified.
+- A pinned store hitting a cacheline which is dirty and not marked pinned yet
+  writes that value back to the memory before overwriting it, and pins the
+  cacheline: the store waits in the RTAB while the flush controller reads the
+  cacheline, and is replayed once the memory has acknowledged the writeback. It
+  therefore cannot destroy a value the memory has not received, and what it
+  leaves in the cache is the new value in a dirty and pinned cacheline.
+
 ### Removed
 
 ### Changed
 
+- The cache directory entries store one additional metadata bit per cacheline
+  (pinned), which increases the width of the Tag RAM entries.
+
 ### Fixed
+
+- A cacheline invalidated in the cache directory could keep its `pinned` bit
+  set: the refill path did not clear it when the refill response reported an
+  error, and the invalidations of the control module (CMO and NoC) left it to
+  the value written by the previous cycle. A way which is invalid and pinned is
+  selected by no victim policy, and its set is not reported as fully pinned
+  either, so such a way could never be allocated again. The `pinned` bit is now
+  written 0 whenever `valid` is written 0, and the memory controller asserts
+  that no directory entry is ever invalid and pinned.
 
 ## [6.0.0] 2026-03-13
 
